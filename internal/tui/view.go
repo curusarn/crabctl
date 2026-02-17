@@ -1,0 +1,237 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/simon/crabctl/internal/session"
+)
+
+var (
+	// Adaptive colors for light/dark terminal backgrounds
+	accentColor = lipgloss.AdaptiveColor{Light: "#D6249F", Dark: "#FF79C6"}
+	greenColor  = lipgloss.AdaptiveColor{Light: "#116620", Dark: "#50FA7B"}
+	yellowColor = lipgloss.AdaptiveColor{Light: "#7D5A00", Dark: "#F1FA8C"}
+	redColor    = lipgloss.AdaptiveColor{Light: "#B31D28", Dark: "#FF5555"}
+	dimColor    = lipgloss.AdaptiveColor{Light: "#777777", Dark: "#6272A4"}
+	hlBgColor   = lipgloss.AdaptiveColor{Light: "#E8E8E8", Dark: "#333333"}
+	cyanColor   = lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#8BE9FD"}
+
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(accentColor).
+			PaddingLeft(1)
+
+	headerStyle = lipgloss.NewStyle().
+			Foreground(dimColor).
+			PaddingLeft(1)
+
+	cursorStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
+
+	selectedRowStyle = lipgloss.NewStyle().
+				Background(hlBgColor)
+
+	statusRunning = lipgloss.NewStyle().
+			Foreground(greenColor)
+
+	statusWaiting = lipgloss.NewStyle().
+			Foreground(yellowColor)
+
+	statusPermission = lipgloss.NewStyle().
+				Foreground(redColor).
+				Bold(true)
+
+	statusUnknown = lipgloss.NewStyle().
+			Foreground(dimColor)
+
+	modeStyle = lipgloss.NewStyle().
+			Foreground(cyanColor)
+
+	actionStyle = lipgloss.NewStyle().
+			Foreground(dimColor)
+
+	confirmStyle = lipgloss.NewStyle().
+			Foreground(yellowColor).
+			Bold(true).
+			PaddingLeft(1)
+
+	helpStyle = lipgloss.NewStyle().
+			Foreground(dimColor).
+			PaddingLeft(1)
+
+	inputLabelStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
+
+	previewBorderStyle = lipgloss.NewStyle().
+				Foreground(dimColor)
+
+	previewContentStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Light: "#444444", Dark: "#BBBBBB"})
+)
+
+// pad right-pads s to width with spaces (based on visual width, not byte count).
+func pad(s string, width int) string {
+	visual := lipgloss.Width(s)
+	if visual >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-visual)
+}
+
+// shortenPath abbreviates a path for display (replaces $HOME with ~, truncates).
+func shortenPath(path string, maxLen int) string {
+	if path == "" {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" && strings.HasPrefix(path, home) {
+		path = "~" + path[len(home):]
+	}
+	if len(path) <= maxLen {
+		return path
+	}
+	return "…" + path[len(path)-(maxLen-1):]
+}
+
+func (m Model) View() string {
+	if m.quitting && m.AttachTarget == "" {
+		return ""
+	}
+
+	var b strings.Builder
+
+	// Title
+	b.WriteString(titleStyle.Render("crabctl"))
+	b.WriteString("\n\n")
+
+	if len(m.sessions) == 0 && m.err == nil {
+		b.WriteString("  No sessions. Run: crabctl new <name>\n\n")
+	} else if m.err != nil {
+		b.WriteString(fmt.Sprintf("  Error: %v\n\n", m.err))
+	} else {
+		// Table header
+		header := fmt.Sprintf("    %-16s %-20s %-12s %-8s %-8s %-10s %s",
+			"NAME", "DIR", "STATUS", "MODE", "DURATION", "ATTACHED", "LAST ACTION")
+		b.WriteString(headerStyle.Render(header))
+		b.WriteString("\n")
+
+		// Rows
+		for i, s := range m.filtered {
+			name := s.Name
+			if len(name) > 16 {
+				name = name[:13] + "..."
+			}
+
+			dir := shortenPath(s.WorkDir, 20)
+			statusStr := renderStatus(s.Status)
+			modeStr := renderMode(s.Mode)
+			dur := session.FormatDuration(s.Duration)
+			attached := renderAttached(s.AttachedCount)
+			action := renderAction(s.LastAction)
+
+			// Build row with manual padding to handle styled strings
+			row := " " + pad(name, 16) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(dur, 8) + " " + pad(attached, 10) + " " + action
+
+			if i == m.cursor {
+				b.WriteString(cursorStyle.Render(" >"))
+				b.WriteString(selectedRowStyle.Render(row))
+			} else {
+				b.WriteString("  ")
+				b.WriteString(row)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Preview panel
+	if m.preview != nil {
+		borderTitle := fmt.Sprintf(" ─── %s ", m.preview.SessionName)
+		titleWidth := lipgloss.Width(borderTitle)
+		remaining := m.width - titleWidth - 2
+		if remaining > 0 {
+			borderTitle += strings.Repeat("─", remaining)
+		}
+		b.WriteString(previewBorderStyle.Render(" " + borderTitle))
+		b.WriteString("\n")
+
+		if m.preview.Output != "" {
+			for _, line := range strings.Split(m.preview.Output, "\n") {
+				b.WriteString(previewContentStyle.Render(" " + line))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(previewContentStyle.Render(" Loading..."))
+			b.WriteString("\n")
+		}
+
+		borderBottom := strings.Repeat("─", max(0, m.width-2))
+		b.WriteString(previewBorderStyle.Render(" " + borderBottom))
+		b.WriteString("\n")
+	}
+
+	// Kill confirmation bar
+	if m.confirmKill != nil {
+		msg := fmt.Sprintf("Kill '%s'? [Enter] confirm  [Esc] cancel", m.confirmKill.SessionName)
+		b.WriteString(confirmStyle.Render(msg))
+		b.WriteString("\n")
+	}
+
+	// Input line
+	b.WriteString(inputLabelStyle.Render(" > "))
+	b.WriteString(m.input.View())
+	b.WriteString("\n")
+
+	// Help bar
+	if m.preview != nil {
+		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+k kill"))
+	} else {
+		b.WriteString(helpStyle.Render("enter preview  j/k navigate  ctrl+k kill  q quit"))
+	}
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+func renderStatus(s session.Status) string {
+	switch s {
+	case session.Running:
+		return statusRunning.Render("running")
+	case session.Waiting:
+		return statusWaiting.Render("waiting")
+	case session.Permission:
+		return statusPermission.Render("permission")
+	default:
+		return statusUnknown.Render("unknown")
+	}
+}
+
+func renderMode(mode string) string {
+	if mode == "" {
+		return statusUnknown.Render("-")
+	}
+	return modeStyle.Render(mode)
+}
+
+func renderAction(action string) string {
+	if action == "" {
+		return ""
+	}
+	return actionStyle.Render(action)
+}
+
+func renderAttached(count int) string {
+	if count == 0 {
+		return "no"
+	}
+	if count == 1 {
+		return "yes"
+	}
+	return fmt.Sprintf("yes (%d)", count)
+}
