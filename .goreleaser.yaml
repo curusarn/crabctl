@@ -37,9 +37,9 @@ changelog:
       - "^ci:"
       - "^chore:"
 
-homebrew_casks:
+brews:
   - repository:
-      owner: simon
+      owner: curusarn
       name: homebrew-tap
-    homepage: "https://github.com/simon/crabctl"
+    homepage: "https://github.com/curusarn/crabctl"
     description: "Manage Claude Code sessions in tmux"
