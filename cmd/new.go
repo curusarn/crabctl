@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,9 @@ var newCmd = &cobra.Command{
 		}
 
 		dir, _ := cmd.Flags().GetString("dir")
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
 		attach, _ := cmd.Flags().GetBool("attach")
 
 		var claudeArgs []string
