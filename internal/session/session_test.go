@@ -86,26 +86,37 @@ func TestDetectStatus(t *testing.T) {
 			expect: Waiting,
 		},
 		{
-			name: "spinner at bottom means running",
+			name: "active spinner at bottom means running",
 			input: `⏺ Read(main.go)
 
-✻ Pondering...`,
+✻ Pondering…`,
 			expect: Running,
 		},
 		{
-			name: "spinner variant ✶",
+			name: "active spinner variant ✶",
 			input: `⏺ Updated plan
 
-✶ Simmering...`,
+✶ Simmering… (6m 24s)`,
 			expect: Running,
 		},
 		{
-			name: "historical spinner does NOT trigger running",
+			name: "completed spinner does NOT trigger running",
 			input: `✻ Brewed for 39s
 
 ❯
 ───────────────────
   ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Waiting,
+		},
+		{
+			name: "completed spinner near bottom does NOT trigger running",
+			input: `⏺ Done.
+
+✻ Crunched for 5m 1s
+
+❯
+───────────────────
+  ? for shortcuts`,
 			expect: Waiting,
 		},
 		{

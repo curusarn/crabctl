@@ -149,8 +149,11 @@ func detectStatus(lines []string) Status {
 		if trimmed == "❯" || trimmed == ">" || strings.HasPrefix(trimmed, "❯") {
 			return Waiting
 		}
-		// Active spinner near the bottom = running
-		if strings.HasPrefix(trimmed, "✽") || strings.HasPrefix(trimmed, "✻") || strings.HasPrefix(trimmed, "✶") {
+		// Active spinner near the bottom = running.
+		// Active spinners have "…" (e.g. "✻ Thinking…"), completed ones don't
+		// (e.g. "✻ Crunched for 5m 1s"). Only match active ones.
+		if (strings.HasPrefix(trimmed, "✽") || strings.HasPrefix(trimmed, "✻") || strings.HasPrefix(trimmed, "✶")) &&
+			strings.Contains(trimmed, "…") {
 			return Running
 		}
 		if strings.ContainsAny(trimmed, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {
