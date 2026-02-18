@@ -160,7 +160,7 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Preview panel
+	// Preview panel (height-limited to keep session list visible)
 	if m.preview != nil {
 		borderTitle := fmt.Sprintf(" ─── %s ", m.preview.SessionName)
 		titleWidth := lipgloss.Width(borderTitle)
@@ -172,7 +172,25 @@ func (m Model) View() string {
 		b.WriteString("\n")
 
 		if m.preview.Output != "" {
-			for _, line := range strings.Split(m.preview.Output, "\n") {
+			previewLines := strings.Split(m.preview.Output, "\n")
+
+			// Budget: title(2) + header(1) + sessions + gap(1) + border(2) + input(1) + help(1) = 8 + sessions
+			// Preview gets whatever remains
+			overhead := 8 + len(m.filtered)
+			maxPreview := m.height - overhead
+			if maxPreview < 3 {
+				maxPreview = 3
+			}
+			if maxPreview > 12 {
+				maxPreview = 12
+			}
+
+			// Show the last N lines (most recent output)
+			start := len(previewLines) - maxPreview
+			if start < 0 {
+				start = 0
+			}
+			for _, line := range previewLines[start:] {
 				b.WriteString(previewContentStyle.Render(" " + line))
 				b.WriteString("\n")
 			}
