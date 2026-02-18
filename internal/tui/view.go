@@ -129,11 +129,11 @@ func (m Model) View() string {
 		// Table header
 		showHost := m.hasRemoteHosts()
 		if showHost {
-			header := fmt.Sprintf("    %-10s %-16s %-20s %-12s %-8s %-8s %-10s %s",
+			header := fmt.Sprintf("    %-10s %-32s %-20s %-12s %-8s %-8s %-10s %s",
 				"HOST", "NAME", "DIR", "STATUS", "MODE", "ACTIVE", "ATTACHED", "LAST ACTION")
 			b.WriteString(headerStyle.Render(header))
 		} else {
-			header := fmt.Sprintf("    %-16s %-20s %-12s %-8s %-8s %-10s %s",
+			header := fmt.Sprintf("    %-32s %-20s %-12s %-8s %-8s %-10s %s",
 				"NAME", "DIR", "STATUS", "MODE", "ACTIVE", "ATTACHED", "LAST ACTION")
 			b.WriteString(headerStyle.Render(header))
 		}
@@ -154,8 +154,8 @@ func (m Model) View() string {
 		for i := m.scrollOffset; i < end; i++ {
 			s := m.filtered[i]
 			name := s.Name
-			if len(name) > 16 {
-				name = name[:13] + "..."
+			if len(name) > 32 {
+				name = name[:29] + "..."
 			}
 
 			dir := shortenPath(s.WorkDir, 20)
@@ -172,9 +172,9 @@ func (m Model) View() string {
 				if host == "" {
 					host = "local"
 				}
-				row = " " + pad(host, 10) + " " + pad(name, 16) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
+				row = " " + pad(host, 10) + " " + pad(name, 32) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
 			} else {
-				row = " " + pad(name, 16) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
+				row = " " + pad(name, 32) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
 			}
 
 			if i == m.cursor {

@@ -285,7 +285,7 @@ func TestSortSessions(t *testing.T) {
 		{Name: "idle-new", Status: Waiting, Duration: 600e9},
 		{Name: "unknown", Status: Unknown, Duration: 100e9},
 	}
-	sortSessions(sessions)
+	SortSessions(sessions)
 
 	expected := []string{"perm", "running", "idle-new", "idle-old", "unknown"}
 	for i, s := range sessions {

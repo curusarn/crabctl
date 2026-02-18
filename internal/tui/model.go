@@ -26,6 +26,13 @@ type sessionCreatedMsg struct {
 	Err  error
 }
 
+// remoteSessionsMsg carries sessions from a single remote host.
+// These get merged into the existing session list.
+type remoteSessionsMsg struct {
+	Host     string
+	Sessions []session.Session
+}
+
 type previewOutputMsg struct {
 	Output string
 }
@@ -80,19 +87,45 @@ func tickCmd() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		textinput.Blink,
-		m.refreshSessions,
+		m.refreshLocalSessions,
 		tickCmd(),
-	)
+	}
+	cmds = append(cmds, m.refreshRemoteSessions()...)
+	return tea.Batch(cmds...)
 }
 
-func (m Model) refreshSessions() tea.Msg {
-	sessions, err := session.ListAll(m.executors)
-	if err != nil {
-		return err
+// refreshLocalSessions fetches only local sessions (fast).
+func (m Model) refreshLocalSessions() tea.Msg {
+	for _, ex := range m.executors {
+		if ex.HostName() == "" {
+			sessions, err := session.ListExecutor(ex)
+			if err != nil {
+				return err
+			}
+			return sessions
+		}
 	}
-	return sessions
+	return []session.Session(nil)
+}
+
+// refreshRemoteSessions returns commands that fetch each remote host in parallel.
+func (m Model) refreshRemoteSessions() []tea.Cmd {
+	var cmds []tea.Cmd
+	for _, ex := range m.executors {
+		if ex.HostName() != "" {
+			ex := ex // capture
+			cmds = append(cmds, func() tea.Msg {
+				sessions, _ := session.ListExecutor(ex)
+				return remoteSessionsMsg{
+					Host:     ex.HostName(),
+					Sessions: sessions,
+				}
+			})
+		}
+	}
+	return cmds
 }
 
 func (m Model) capturePreviewCmd(fullName, host string) tea.Cmd {
@@ -123,10 +156,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 		}
 		m.input.SetValue("")
-		return m, m.refreshSessions
+		return m, m.refreshLocalSessions
 
 	case []session.Session:
-		m.sessions = msg
+		// Local sessions replace only local entries, preserve remote
+		remote := filterByHost(m.sessions, true)
+		m.sessions = append(msg, remote...)
+		session.SortSessions(m.sessions)
+		if m.preview == nil {
+			m.applyFilter()
+		}
+		return m, nil
+
+	case remoteSessionsMsg:
+		// Replace sessions for this specific host, keep everything else
+		var kept []session.Session
+		for _, s := range m.sessions {
+			if s.Host != msg.Host {
+				kept = append(kept, s)
+			}
+		}
+		m.sessions = append(kept, msg.Sessions...)
+		session.SortSessions(m.sessions)
 		if m.preview == nil {
 			m.applyFilter()
 		}
@@ -137,7 +188,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		cmds := []tea.Cmd{tickCmd(), m.refreshSessions}
+		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
+		cmds = append(cmds, m.refreshRemoteSessions()...)
 		if m.preview != nil {
 			cmds = append(cmds, m.capturePreviewCmd(m.preview.FullName, m.preview.Host))
 		}
@@ -366,7 +418,7 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 	_ = exec.KillSession(m.confirmKill.FullName)
 	m.confirmKill = nil
 	m.preview = nil
-	return m, m.refreshSessions
+	return m, m.refreshLocalSessions
 }
 
 func (m *Model) applyFilter() {
@@ -423,6 +475,18 @@ func (m *Model) ensureCursorVisible() {
 	if m.scrollOffset > maxOffset {
 		m.scrollOffset = maxOffset
 	}
+}
+
+// filterByHost returns sessions that are remote (non-empty host) or local (empty host).
+func filterByHost(sessions []session.Session, remoteOnly bool) []session.Session {
+	var out []session.Session
+	for _, s := range sessions {
+		isRemote := s.Host != ""
+		if isRemote == remoteOnly {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (m Model) hasRemoteHosts() bool {

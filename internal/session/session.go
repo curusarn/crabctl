@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/simon/crabctl/internal/tmux"
@@ -70,75 +69,44 @@ func List() ([]Session, error) {
 			WorkDir:       workDir,
 		})
 	}
-	sortSessions(sessions)
+	SortSessions(sessions)
 	return sessions, nil
 }
 
-// ListAll returns sessions from all executors, merging results.
-func ListAll(executors []tmux.Executor) ([]Session, error) {
-	if len(executors) == 0 {
-		return List()
+// ListExecutor returns sessions from a single executor.
+func ListExecutor(ex tmux.Executor) ([]Session, error) {
+	host := ex.HostName()
+
+	infos, err := ex.ListSessions()
+	if err != nil {
+		return nil, err
 	}
 
-	type result struct {
-		sessions []Session
-		err      error
-	}
+	sessions := make([]Session, 0, len(infos))
+	for _, info := range infos {
+		output, _ := ex.CapturePaneOutput(info.FullName, 25)
+		status, mode, lastAction := analyzeOutput(output)
+		workDir := ex.GetPanePath(info.FullName)
 
-	results := make([]result, len(executors))
-	var wg sync.WaitGroup
-
-	for i, exec := range executors {
-		wg.Add(1)
-		go func(idx int, ex tmux.Executor) {
-			defer wg.Done()
-			host := ex.HostName()
-
-			infos, err := ex.ListSessions()
-			if err != nil {
-				results[idx] = result{err: err}
-				return
-			}
-
-			sessions := make([]Session, 0, len(infos))
-			for _, info := range infos {
-				output, _ := ex.CapturePaneOutput(info.FullName, 25)
-				status, mode, lastAction := analyzeOutput(output)
-				workDir := ex.GetPanePath(info.FullName)
-
-				var lastActive time.Time
-				if host == "" {
-					lastActive = findLatestSessionFile(workDir)
-				}
-
-				sessions = append(sessions, Session{
-					Name:          info.Name,
-					FullName:      info.FullName,
-					Host:          host,
-					Status:        status,
-					Mode:          mode,
-					LastAction:    lastAction,
-					Duration:      time.Since(info.Created),
-					LastActive:    lastActive,
-					AttachedCount: info.AttachedCount,
-					WorkDir:       workDir,
-				})
-			}
-			results[idx] = result{sessions: sessions}
-		}(i, exec)
-	}
-
-	wg.Wait()
-
-	var all []Session
-	for _, r := range results {
-		if r.err != nil {
-			continue // skip hosts that failed
+		var lastActive time.Time
+		if host == "" {
+			lastActive = findLatestSessionFile(workDir)
 		}
-		all = append(all, r.sessions...)
+
+		sessions = append(sessions, Session{
+			Name:          info.Name,
+			FullName:      info.FullName,
+			Host:          host,
+			Status:        status,
+			Mode:          mode,
+			LastAction:    lastAction,
+			Duration:      time.Since(info.Created),
+			LastActive:    lastActive,
+			AttachedCount: info.AttachedCount,
+			WorkDir:       workDir,
+		})
 	}
-	sortSessions(all)
-	return all, nil
+	return sessions, nil
 }
 
 // statusPriority returns sort priority (lower = more important, shown first).
@@ -155,9 +123,9 @@ func statusPriority(s Status) int {
 	}
 }
 
-// sortSessions sorts by status priority, then by duration (shortest first,
+// SortSessions sorts by status priority, then by duration (shortest first,
 // meaning most recently created sessions appear first within each group).
-func sortSessions(sessions []Session) {
+func SortSessions(sessions []Session) {
 	sort.SliceStable(sessions, func(i, j int) bool {
 		pi, pj := statusPriority(sessions[i].Status), statusPriority(sessions[j].Status)
 		if pi != pj {
