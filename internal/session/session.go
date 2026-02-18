@@ -93,9 +93,8 @@ func ListAll(executors []tmux.Executor) ([]Session, error) {
 		go func(idx int, ex tmux.Executor) {
 			defer wg.Done()
 			host := ex.HostName()
-			prefix := tmux.SessionPrefix
 
-			infos, err := ex.ListSessions(prefix)
+			infos, err := ex.ListSessions()
 			if err != nil {
 				results[idx] = result{err: err}
 				return

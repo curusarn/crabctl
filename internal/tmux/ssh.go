@@ -16,7 +16,8 @@ type SSHExecutor struct {
 	Prefix   string
 }
 
-func (s *SSHExecutor) HostName() string { return s.Nickname }
+func (s *SSHExecutor) HostName() string      { return s.Nickname }
+func (s *SSHExecutor) SessionPrefix() string { return s.Prefix }
 
 func (s *SSHExecutor) sshArgs() []string {
 	args := []string{
@@ -42,13 +43,13 @@ func (s *SSHExecutor) run(remoteCmd string) (string, error) {
 	return string(out), nil
 }
 
-func (s *SSHExecutor) ListSessions(prefix string) ([]SessionInfo, error) {
+func (s *SSHExecutor) ListSessions() ([]SessionInfo, error) {
 	out, err := s.run(fmt.Sprintf("tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_created}' 2>/dev/null"))
 	if err != nil {
 		// No server running is not an error
 		return nil, nil
 	}
-	return parseSessionList(out, prefix), nil
+	return parseSessionList(out, s.Prefix), nil
 }
 
 func (s *SSHExecutor) CapturePaneOutput(fullName string, lines int) (string, error) {

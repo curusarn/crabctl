@@ -6,8 +6,6 @@ import (
 	"regexp"
 
 	"github.com/spf13/cobra"
-
-	"github.com/simon/crabctl/internal/tmux"
 )
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -23,7 +21,7 @@ var newCmd = &cobra.Command{
 		}
 
 		exec := resolveExecutor(host)
-		fullName := tmux.SessionPrefix + name
+		fullName := exec.SessionPrefix() + name
 		if exec.HasSession(fullName) {
 			return fmt.Errorf("session %q already exists", args[0])
 		}

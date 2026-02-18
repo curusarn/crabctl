@@ -3,7 +3,8 @@ package tmux
 // Executor abstracts tmux operations so they can run locally or over SSH.
 type Executor interface {
 	HostName() string
-	ListSessions(prefix string) ([]SessionInfo, error)
+	SessionPrefix() string
+	ListSessions() ([]SessionInfo, error)
 	CapturePaneOutput(fullName string, lines int) (string, error)
 	NewSession(name, workDir string, claudeArgs []string) error
 	SendKeys(fullName, text string) error

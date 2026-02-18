@@ -10,10 +10,11 @@ import (
 // LocalExecutor runs tmux commands on the local machine.
 type LocalExecutor struct{}
 
-func (l *LocalExecutor) HostName() string { return "" }
+func (l *LocalExecutor) HostName() string      { return "" }
+func (l *LocalExecutor) SessionPrefix() string { return SessionPrefix }
 
-func (l *LocalExecutor) ListSessions(prefix string) ([]SessionInfo, error) {
-	return listSessionsWithPrefix(prefix)
+func (l *LocalExecutor) ListSessions() ([]SessionInfo, error) {
+	return listSessionsWithPrefix(SessionPrefix)
 }
 
 func (l *LocalExecutor) CapturePaneOutput(fullName string, lines int) (string, error) {

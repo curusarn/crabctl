@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/simon/crabctl/internal/tmux"
 )
 
 var sendCmd = &cobra.Command{
@@ -17,7 +15,7 @@ var sendCmd = &cobra.Command{
 		host, name := parseHostName(args[0])
 		text := strings.Join(args[1:], " ")
 		exec := resolveExecutor(host)
-		fullName := tmux.SessionPrefix + name
+		fullName := exec.SessionPrefix() + name
 
 		if !exec.HasSession(fullName) {
 			return fmt.Errorf("session %q not found", args[0])

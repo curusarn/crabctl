@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-
-	"github.com/simon/crabctl/internal/tmux"
 )
 
 var killCmd = &cobra.Command{
@@ -18,7 +16,7 @@ var killCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		host, name := parseHostName(args[0])
 		exec := resolveExecutor(host)
-		fullName := tmux.SessionPrefix + name
+		fullName := exec.SessionPrefix() + name
 
 		if !exec.HasSession(fullName) {
 			return fmt.Errorf("session %q not found", args[0])
