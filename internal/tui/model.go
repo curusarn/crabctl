@@ -59,6 +59,8 @@ type Model struct {
 	preview       *previewState
 	confirmKill   *confirmAction
 	executors     []tmux.Executor
+	remoteLoading map[string]bool // hosts still being fetched
+	spinnerFrame  int
 	width, height int
 	AttachTarget  string // set when user confirms attach
 	AttachHost    string // host of session to attach
@@ -74,9 +76,17 @@ func NewModel(executors []tmux.Executor) Model {
 	ti.CharLimit = 256
 	ti.Width = 60
 
+	loading := make(map[string]bool)
+	for _, e := range executors {
+		if e.HostName() != "" {
+			loading[e.HostName()] = true
+		}
+	}
+
 	return Model{
-		input:     ti,
-		executors: executors,
+		input:         ti,
+		executors:     executors,
+		remoteLoading: loading,
 	}
 }
 
@@ -169,6 +179,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case remoteSessionsMsg:
+		// Clear loading state for this host
+		delete(m.remoteLoading, msg.Host)
 		// Replace sessions for this specific host, keep everything else
 		var kept []session.Session
 		for _, s := range m.sessions {
@@ -188,6 +200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		m.spinnerFrame++
 		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
 		cmds = append(cmds, m.refreshRemoteSessions()...)
 		if m.preview != nil {

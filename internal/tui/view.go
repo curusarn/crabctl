@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -191,6 +192,20 @@ func (m Model) View() string {
 			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↓ %d more", len(m.filtered)-end)))
 			b.WriteString("\n")
 		}
+
+		// Loading indicator for remote hosts
+		if len(m.remoteLoading) > 0 {
+			spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+			spinner := string(spinnerChars[m.spinnerFrame%len(spinnerChars)])
+			var hosts []string
+			for h := range m.remoteLoading {
+				hosts = append(hosts, h)
+			}
+			sort.Strings(hosts)
+			b.WriteString(helpStyle.Render(fmt.Sprintf("    %s fetching %s...", spinner, strings.Join(hosts, ", "))))
+			b.WriteString("\n")
+		}
+
 		b.WriteString("\n")
 	}
 
@@ -208,7 +223,7 @@ func (m Model) View() string {
 		if m.preview.Output != "" {
 			previewLines := strings.Split(m.preview.Output, "\n")
 
-			// Budget: title+blank(2) + header(1) + visible sessions + scroll indicators + gap(1) + borders(2) + input(1) + help(1) + safety(1)
+			// Budget: title+blank(2) + header(1) + visible sessions + scroll indicators + loading(0-1) + gap(1) + borders(2) + input(1) + help(1) + safety(1)
 			visibleRows := m.maxVisibleSessions()
 			scrollIndicators := 0
 			if m.scrollOffset > 0 {
@@ -217,7 +232,11 @@ func (m Model) View() string {
 			if m.scrollOffset+visibleRows < len(m.filtered) {
 				scrollIndicators++
 			}
-			overhead := 9 + visibleRows + scrollIndicators
+			loadingLine := 0
+			if len(m.remoteLoading) > 0 {
+				loadingLine = 1
+			}
+			overhead := 9 + visibleRows + scrollIndicators + loadingLine
 			maxPreview := m.height - overhead
 			if maxPreview < 3 {
 				maxPreview = 3

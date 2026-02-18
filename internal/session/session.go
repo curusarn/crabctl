@@ -123,10 +123,15 @@ func statusPriority(s Status) int {
 	}
 }
 
-// SortSessions sorts by status priority, then by duration (shortest first,
-// meaning most recently created sessions appear first within each group).
+// SortSessions sorts by: local first (by status priority, then duration),
+// remote after (by status priority, then duration).
 func SortSessions(sessions []Session) {
 	sort.SliceStable(sessions, func(i, j int) bool {
+		iLocal := sessions[i].Host == ""
+		jLocal := sessions[j].Host == ""
+		if iLocal != jLocal {
+			return iLocal // local before remote
+		}
 		pi, pj := statusPriority(sessions[i].Status), statusPriority(sessions[j].Status)
 		if pi != pj {
 			return pi < pj

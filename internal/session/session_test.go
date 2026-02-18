@@ -295,6 +295,23 @@ func TestSortSessions(t *testing.T) {
 	}
 }
 
+func TestSortSessionsLocalBeforeRemote(t *testing.T) {
+	sessions := []Session{
+		{Name: "remote-running", Host: "bay1", Status: Running, Duration: 100e9},
+		{Name: "local-waiting", Host: "", Status: Waiting, Duration: 600e9},
+		{Name: "remote-perm", Host: "bay1", Status: Permission, Duration: 50e9},
+		{Name: "local-running", Host: "", Status: Running, Duration: 200e9},
+	}
+	SortSessions(sessions)
+
+	expected := []string{"local-running", "local-waiting", "remote-perm", "remote-running"}
+	for i, s := range sessions {
+		if s.Name != expected[i] {
+			t.Errorf("position %d: got %q, want %q", i, s.Name, expected[i])
+		}
+	}
+}
+
 func TestEncodeProjectDir(t *testing.T) {
 	tests := []struct {
 		input string
