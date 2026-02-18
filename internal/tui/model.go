@@ -81,7 +81,7 @@ func (m Model) refreshSessions() tea.Msg {
 
 func capturePreviewCmd(fullName string) tea.Cmd {
 	return func() tea.Msg {
-		output, err := tmux.CapturePaneOutput(fullName, 20)
+		output, err := tmux.CapturePaneOutput(fullName, 50)
 		if err != nil {
 			return previewOutputMsg{Output: "Error: " + err.Error()}
 		}

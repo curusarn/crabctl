@@ -174,15 +174,12 @@ func (m Model) View() string {
 		if m.preview.Output != "" {
 			previewLines := strings.Split(m.preview.Output, "\n")
 
-			// Budget: title(2) + header(1) + sessions + gap(1) + border(2) + input(1) + help(1) = 8 + sessions
-			// Preview gets whatever remains
-			overhead := 8 + len(m.filtered)
+			// Budget: title+blank(2) + header(1) + sessions + gap(1) + borders(2) + input(1) + help(1) + safety(1) = 9 + sessions
+			// Preview fills all remaining terminal height
+			overhead := 9 + len(m.filtered)
 			maxPreview := m.height - overhead
 			if maxPreview < 3 {
 				maxPreview = 3
-			}
-			if maxPreview > 12 {
-				maxPreview = 12
 			}
 
 			// Show the last N lines (most recent output)
@@ -204,7 +201,12 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Input line
+	// Input line (placeholder changes based on mode)
+	if m.preview != nil {
+		m.input.Placeholder = "Type and press Enter to send a message to the session..."
+	} else {
+		m.input.Placeholder = "Type to filter or enter command..."
+	}
 	b.WriteString(inputLabelStyle.Render(" > "))
 	b.WriteString(m.input.View())
 	b.WriteString("\n")
