@@ -42,5 +42,6 @@ brews:
       owner: curusarn
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
     homepage: "https://github.com/curusarn/crabctl"
     description: "Manage Claude Code sessions in tmux"
