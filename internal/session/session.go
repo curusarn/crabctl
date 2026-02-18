@@ -140,6 +140,14 @@ func SortSessions(sessions []Session) {
 	})
 }
 
+// DetectStatus returns the session status from raw pane output.
+func DetectStatus(output string) Status {
+	if output == "" {
+		return Unknown
+	}
+	return detectStatus(strings.Split(output, "\n"))
+}
+
 // analyzeOutput extracts status, mode, and last action from captured pane output.
 func analyzeOutput(output string) (Status, string, string) {
 	if output == "" {

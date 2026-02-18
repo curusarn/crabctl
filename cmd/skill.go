@@ -10,16 +10,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const skillURL = "https://raw.githubusercontent.com/curusarn/crabctl/main/.claude/skills/crabs/SKILL.md"
+const skillURL = "https://raw.githubusercontent.com/curusarn/crabctl/main/.claude/skills/crab/SKILL.md"
 
 var skillCmd = &cobra.Command{
 	Use:   "skill",
-	Short: "Install the crabs skill into the current project",
-	Long: `Downloads the crabs skill from GitHub and installs it into
+	Short: "Install the crab skill into the current project",
+	Long: `Downloads the crab skill from GitHub and installs it into
 the current project for both Claude Code and OpenCode:
 
-  .claude/skills/crabs/SKILL.md
-  .opencode/skills/crabs/SKILL.md`,
+  .claude/skills/crab/SKILL.md
+  .opencode/skills/crab/SKILL.md`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		resp, err := http.Get(skillURL)
 		if err != nil {
@@ -37,8 +37,8 @@ the current project for both Claude Code and OpenCode:
 		}
 
 		targets := []string{
-			filepath.Join(".claude", "skills", "crabs", "SKILL.md"),
-			filepath.Join(".opencode", "skills", "crabs", "SKILL.md"),
+			filepath.Join(".claude", "skills", "crab", "SKILL.md"),
+			filepath.Join(".opencode", "skills", "crab", "SKILL.md"),
 		}
 
 		for _, target := range targets {

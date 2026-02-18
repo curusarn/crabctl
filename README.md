@@ -21,9 +21,9 @@ Then restart your shell or run `source ~/.zshrc`.
 
 ## Quickstart
 
-- Run non-tmuxed Claude in the repo — there's a `CLAUDE.md` and `/crabs` skill
-- Ask it to delegate to `/crabs`
-- Use `crabctl` to manage running crabs (tmuxed Claude sessions)
+- Run non-tmuxed Claude in the repo — there's a `CLAUDE.md` and `/crab` skill
+- Ask it to delegate to `/crab`
+- Use `crabctl` to manage running crab sessions (tmuxed Claude instances)
   - Double Enter to open a session (`Ctrl+B` then `D` to detach and return to crabctl)
   - Enter + type + Enter to send a one-off message to an agent
 - `crabctl new my-session-name` to launch a new crab manually

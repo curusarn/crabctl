@@ -1,5 +1,5 @@
 ---
-name: crabs
+name: crab
 description: Check status of all running crab sessions and send instructions
 allowed-tools: Bash, AskUserQuestion
 ---
@@ -81,19 +81,23 @@ When composing instructions for a crab:
 
 ### 6. Creating new crab sessions
 
-Use `crabctl new` — it handles CLAUDECODE env var, trust prompt bypass, and session prefix automatically:
+Use `crabctl new` — it handles CLAUDECODE env var, trust prompt bypass, and session prefix automatically.
+
+**Preferred: create and send message in one command:**
+
+```bash
+bin/crabctl new NAME your task message here
+bin/crabctl new NAME --dir /path/to/repo -m 'your task message'
+```
+
+This creates `crab-NAME`, waits for Claude's `❯` prompt (polls every 500ms, 30s timeout), then sends the message automatically. No manual waiting needed.
+
+**Without a message (just create):**
 
 ```bash
 bin/crabctl new NAME
-```
-
-This creates `crab-NAME` with Claude Code already running and ready. Optionally specify a working directory:
-
-```bash
 bin/crabctl new NAME --dir /path/to/repo
 ```
-
-Wait ~8 seconds after creation, then capture the pane to verify Claude is at the `❯` prompt before sending the task message.
 
 ### 7. Status detection details
 
@@ -126,9 +130,9 @@ When orchestrating multiple crabs working on the same repo:
 ## Examples
 
 ```
-/crabs                          # Check status of all sessions
-/crabs send query "git pull"    # Send instruction to a session
-new /crabs session: do X        # Create new session with a task
+/crab                          # Check status of all sessions
+/crab send query "git pull"    # Send instruction to a session
+new /crab session: do X        # Create new session with a task
 ```
 
 ## Notes

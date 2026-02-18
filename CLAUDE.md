@@ -59,7 +59,7 @@ crabctl send worker-2 'fix bug Y'            # Send task
 crabctl                                       # TUI to monitor all sessions
 ```
 
-Each crab session is an independent Claude Code instance running in tmux. They don't share memory — coordinate via explicit messages. The `/crabs` skill (`.claude/skills/crabs/`) automates status checking, message sending, and new session creation from within a Claude Code session.
+Each crab session is an independent Claude Code instance running in tmux. They don't share memory — coordinate via explicit messages. The `/crab` skill (`.claude/skills/crab/`) automates status checking, message sending, and new session creation from within a Claude Code session.
 
 ## Release
 
