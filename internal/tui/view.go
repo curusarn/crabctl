@@ -146,9 +146,13 @@ func (m Model) View() string {
 		if end > len(m.filtered) {
 			end = len(m.filtered)
 		}
+		scrollable := len(m.filtered) > maxVis
 
-		if m.scrollOffset > 0 {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↑ %d more", m.scrollOffset)))
+		// Reserve constant height: when scrollable, always show both indicator lines
+		if scrollable {
+			if m.scrollOffset > 0 {
+				b.WriteString(helpStyle.Render(fmt.Sprintf("    ↑ %d more", m.scrollOffset)))
+			}
 			b.WriteString("\n")
 		}
 
@@ -188,8 +192,10 @@ func (m Model) View() string {
 			b.WriteString("\n")
 		}
 
-		if end < len(m.filtered) {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↓ %d more", len(m.filtered)-end)))
+		if scrollable {
+			if end < len(m.filtered) {
+				b.WriteString(helpStyle.Render(fmt.Sprintf("    ↓ %d more", len(m.filtered)-end)))
+			}
 			b.WriteString("\n")
 		}
 
@@ -223,14 +229,11 @@ func (m Model) View() string {
 		if m.preview.Output != "" {
 			previewLines := strings.Split(m.preview.Output, "\n")
 
-			// Budget: title+blank(2) + header(1) + visible sessions + scroll indicators + loading(0-1) + gap(1) + borders(2) + input(1) + help(1) + safety(1)
+			// Budget: title+blank(2) + header(1) + visible sessions + scroll indicators(0 or 2) + loading(0-1) + gap(1) + borders(2) + input(1) + help(1) + safety(1)
 			visibleRows := m.maxVisibleSessions()
 			scrollIndicators := 0
-			if m.scrollOffset > 0 {
-				scrollIndicators++
-			}
-			if m.scrollOffset+visibleRows < len(m.filtered) {
-				scrollIndicators++
+			if len(m.filtered) > visibleRows {
+				scrollIndicators = 2 // always reserve both lines when scrollable
 			}
 			loadingLine := 0
 			if len(m.remoteLoading) > 0 {
