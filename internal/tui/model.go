@@ -16,10 +16,12 @@ import (
 )
 
 const pollInterval = 1500 * time.Millisecond
+const spinnerInterval = 100 * time.Millisecond
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 type tickMsg time.Time
+type spinnerTickMsg time.Time
 
 type sessionCreatedMsg struct {
 	Name string
@@ -90,6 +92,12 @@ func NewModel(executors []tmux.Executor) Model {
 	}
 }
 
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg {
+		return spinnerTickMsg(t)
+	})
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(pollInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -101,6 +109,9 @@ func (m Model) Init() tea.Cmd {
 		textinput.Blink,
 		m.refreshLocalSessions,
 		tickCmd(),
+	}
+	if len(m.remoteLoading) > 0 {
+		cmds = append(cmds, spinnerTickCmd())
 	}
 	cmds = append(cmds, m.refreshRemoteSessions()...)
 	return tea.Batch(cmds...)
@@ -199,8 +210,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg
 		return m, nil
 
-	case tickMsg:
+	case spinnerTickMsg:
 		m.spinnerFrame++
+		if len(m.remoteLoading) > 0 {
+			return m, spinnerTickCmd()
+		}
+		return m, nil
+
+	case tickMsg:
 		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
 		cmds = append(cmds, m.refreshRemoteSessions()...)
 		if m.preview != nil {
