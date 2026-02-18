@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,7 +17,14 @@ import (
 
 const pollInterval = 1500 * time.Millisecond
 
+var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 type tickMsg time.Time
+
+type sessionCreatedMsg struct {
+	Name string
+	Err  error
+}
 
 type previewOutputMsg struct {
 	Output string
@@ -23,28 +33,33 @@ type previewOutputMsg struct {
 type previewState struct {
 	SessionName string
 	FullName    string
+	Host        string
 	Output      string
 }
 
 type confirmAction struct {
 	SessionName string
 	FullName    string
+	Host        string
 }
 
 type Model struct {
 	sessions      []session.Session
 	filtered      []session.Session
 	cursor        int
+	scrollOffset  int
 	input         textinput.Model
 	preview       *previewState
 	confirmKill   *confirmAction
+	executors     []tmux.Executor
 	width, height int
 	AttachTarget  string // set when user confirms attach
+	AttachHost    string // host of session to attach
 	quitting      bool
 	err           error
 }
 
-func NewModel() Model {
+func NewModel(executors []tmux.Executor) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter or enter command..."
 	ti.Prompt = ""
@@ -53,7 +68,8 @@ func NewModel() Model {
 	ti.Width = 60
 
 	return Model{
-		input: ti,
+		input:     ti,
+		executors: executors,
 	}
 }
 
@@ -72,16 +88,17 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) refreshSessions() tea.Msg {
-	sessions, err := session.List()
+	sessions, err := session.ListAll(m.executors)
 	if err != nil {
 		return err
 	}
 	return sessions
 }
 
-func capturePreviewCmd(fullName string) tea.Cmd {
+func (m Model) capturePreviewCmd(fullName, host string) tea.Cmd {
+	exec := m.findExecutor(host)
 	return func() tea.Msg {
-		output, err := tmux.CapturePaneOutput(fullName, 50)
+		output, err := exec.CapturePaneOutput(fullName, 50)
 		if err != nil {
 			return previewOutputMsg{Output: "Error: " + err.Error()}
 		}
@@ -89,8 +106,24 @@ func capturePreviewCmd(fullName string) tea.Cmd {
 	}
 }
 
+func (m Model) findExecutor(host string) tmux.Executor {
+	for _, e := range m.executors {
+		if e.HostName() == host {
+			return e
+		}
+	}
+	return &tmux.LocalExecutor{}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case sessionCreatedMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+		}
+		m.input.SetValue("")
+		return m, m.refreshSessions
 
 	case []session.Session:
 		m.sessions = msg
@@ -106,7 +139,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		cmds := []tea.Cmd{tickCmd(), m.refreshSessions}
 		if m.preview != nil {
-			cmds = append(cmds, capturePreviewCmd(m.preview.FullName))
+			cmds = append(cmds, m.capturePreviewCmd(m.preview.FullName, m.preview.Host))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -121,6 +154,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.input.Width = msg.Width - 4
 		return m, nil
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -171,6 +207,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmKill = &confirmAction{
 				SessionName: sel.Name,
 				FullName:    sel.FullName,
+				Host:        sel.Host,
 			}
 		}
 		return m, nil
@@ -197,19 +234,30 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, keys.Up) {
 			if m.cursor > 0 {
 				m.cursor--
+				m.ensureCursorVisible()
 			}
 			return m, nil
 		}
 		if key.Matches(msg, keys.Down) {
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
+				m.ensureCursorVisible()
 			}
 			return m, nil
 		}
 	}
 
-	// Enter (empty): open preview
+	// Enter
 	if key.Matches(msg, keys.Enter) {
+		text := strings.TrimSpace(m.input.Value())
+
+		// /new command: create a new session
+		if cmd := parseNewCommand(text); cmd != nil {
+			m.input.SetValue("")
+			return m, cmd
+		}
+
+		// Open preview
 		sel := m.selectedSession()
 		if sel == nil {
 			return m, nil
@@ -217,9 +265,10 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.preview = &previewState{
 			SessionName: sel.Name,
 			FullName:    sel.FullName,
+			Host:        sel.Host,
 		}
 		m.input.SetValue("")
-		return m, capturePreviewCmd(sel.FullName)
+		return m, m.capturePreviewCmd(sel.FullName, sel.Host)
 	}
 
 	// Default: update text input and refilter
@@ -230,20 +279,40 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Navigation: switch between sessions while previewing
+	if m.input.Value() == "" {
+		if key.Matches(msg, keys.Up) {
+			if m.cursor > 0 {
+				m.cursor--
+				m.ensureCursorVisible()
+			}
+			return m.switchPreview()
+		}
+		if key.Matches(msg, keys.Down) {
+			if m.cursor < len(m.filtered)-1 {
+				m.cursor++
+				m.ensureCursorVisible()
+			}
+			return m.switchPreview()
+		}
+	}
+
 	// Enter
 	if key.Matches(msg, keys.Enter) {
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
 			// Attach to session
 			m.AttachTarget = m.preview.FullName
+			m.AttachHost = m.preview.Host
 			m.preview = nil
 			m.quitting = true
 			return m, tea.Quit
 		}
 		// Send text to session
-		_ = sendToSession(m.preview.FullName, text)
+		exec := m.findExecutor(m.preview.Host)
+		_ = exec.SendKeys(m.preview.FullName, text)
 		m.input.SetValue("")
-		return m, capturePreviewCmd(m.preview.FullName)
+		return m, m.capturePreviewCmd(m.preview.FullName, m.preview.Host)
 	}
 
 	// Default: update text input (no filtering in preview mode)
@@ -252,11 +321,49 @@ func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) switchPreview() (tea.Model, tea.Cmd) {
+	sel := m.selectedSession()
+	if sel == nil {
+		return m, nil
+	}
+	m.preview.SessionName = sel.Name
+	m.preview.FullName = sel.FullName
+	m.preview.Host = sel.Host
+	m.preview.Output = ""
+	return m, m.capturePreviewCmd(sel.FullName, sel.Host)
+}
+
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Ignore all mouse events in preview mode
+	if m.preview != nil {
+		return m, nil
+	}
+
+	// Normal mode: scroll wheel navigates sessions
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if m.cursor > 0 {
+			m.cursor--
+			m.ensureCursorVisible()
+		}
+		return m, nil
+	case tea.MouseButtonWheelDown:
+		if m.cursor < len(m.filtered)-1 {
+			m.cursor++
+			m.ensureCursorVisible()
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
 func (m Model) executeKill() (Model, tea.Cmd) {
 	if m.confirmKill == nil {
 		return m, nil
 	}
-	_ = killSession(m.confirmKill.FullName)
+	exec := m.findExecutor(m.confirmKill.Host)
+	_ = exec.KillSession(m.confirmKill.FullName)
 	m.confirmKill = nil
 	m.preview = nil
 	return m, m.refreshSessions
@@ -279,6 +386,52 @@ func (m *Model) applyFilter() {
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
+	m.ensureCursorVisible()
+}
+
+func (m Model) maxVisibleSessions() int {
+	if m.preview == nil {
+		return len(m.filtered)
+	}
+	maxVis := m.height / 10
+	if maxVis < 5 {
+		maxVis = 5
+	}
+	if maxVis > len(m.filtered) {
+		maxVis = len(m.filtered)
+	}
+	return maxVis
+}
+
+func (m *Model) ensureCursorVisible() {
+	maxVis := m.maxVisibleSessions()
+	if maxVis <= 0 {
+		m.scrollOffset = 0
+		return
+	}
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	}
+	if m.cursor >= m.scrollOffset+maxVis {
+		m.scrollOffset = m.cursor - maxVis + 1
+	}
+	// Clamp scrollOffset
+	maxOffset := len(m.filtered) - maxVis
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+}
+
+func (m Model) hasRemoteHosts() bool {
+	for _, e := range m.executors {
+		if e.HostName() != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) selectedSession() *session.Session {
@@ -292,12 +445,39 @@ func (m Model) selectedSession() *session.Session {
 	return &s
 }
 
-func sendToSession(fullName, text string) error {
-	return session.Send(fullName, text)
-}
+func parseNewCommand(text string) tea.Cmd {
+	if !strings.HasPrefix(text, "/new ") {
+		return nil
+	}
+	parts := strings.Fields(text)
+	if len(parts) < 2 {
+		return nil
+	}
+	name := parts[1]
+	if !validName.MatchString(name) {
+		return nil
+	}
 
-func killSession(fullName string) error {
-	return session.Kill(fullName)
+	dir := ""
+	if len(parts) >= 3 {
+		dir = parts[2]
+	}
+
+	return func() tea.Msg {
+		workDir := dir
+		if workDir == "" {
+			workDir, _ = os.Getwd()
+		}
+
+		fullName := tmux.SessionPrefix + name
+		if tmux.HasSession(fullName) {
+			return sessionCreatedMsg{Name: name, Err: fmt.Errorf("session %q already exists", name)}
+		}
+
+		claudeArgs := []string{"--dangerously-skip-permissions"}
+		err := tmux.NewSession(name, workDir, claudeArgs)
+		return sessionCreatedMsg{Name: name, Err: err}
+	}
 }
 
 // cleanPreviewOutput strips Claude's TUI decoration from captured pane output.

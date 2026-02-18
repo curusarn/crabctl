@@ -13,22 +13,23 @@ import (
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 var newCmd = &cobra.Command{
-	Use:   "new <name>",
+	Use:   "new <[host:]name>",
 	Short: "Create a new Claude session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
+		host, name := parseHostName(args[0])
 		if !validName.MatchString(name) {
 			return fmt.Errorf("invalid name %q: use only alphanumeric, hyphens, underscores", name)
 		}
 
+		exec := resolveExecutor(host)
 		fullName := tmux.SessionPrefix + name
-		if tmux.HasSession(fullName) {
-			return fmt.Errorf("session %q already exists", name)
+		if exec.HasSession(fullName) {
+			return fmt.Errorf("session %q already exists", args[0])
 		}
 
 		dir, _ := cmd.Flags().GetString("dir")
-		if dir == "" {
+		if dir == "" && host == "" {
 			dir, _ = os.Getwd()
 		}
 		attach, _ := cmd.Flags().GetBool("attach")
@@ -36,14 +37,14 @@ var newCmd = &cobra.Command{
 		var claudeArgs []string
 		claudeArgs = append(claudeArgs, "--dangerously-skip-permissions")
 
-		if err := tmux.NewSession(name, dir, claudeArgs); err != nil {
+		if err := exec.NewSession(name, dir, claudeArgs); err != nil {
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
-		fmt.Printf("Created session %q\n", name)
+		fmt.Printf("Created session %q\n", args[0])
 
 		if attach {
-			return tmux.AttachSession(fullName)
+			return exec.AttachSession(fullName)
 		}
 
 		return nil

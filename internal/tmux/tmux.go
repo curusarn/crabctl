@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,43 +26,17 @@ func FindTmux() (string, error) {
 
 // ListSessions returns all crab-* tmux sessions.
 func ListSessions() ([]SessionInfo, error) {
-	tmux, err := FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux not found: %w", err)
-	}
+	return listSessionsWithPrefix(SessionPrefix)
+}
 
-	cmd := exec.Command(tmux, "list-sessions", "-F", "#{session_name}|#{session_attached}|#{session_created}")
+// runCommand executes a command and returns its output as a string.
+func runCommand(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {
-		// "no server running" or "no sessions" — not an error for us
-		return nil, nil
+		return "", err
 	}
-
-	var sessions []SessionInfo
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		fullName := parts[0]
-		if !strings.HasPrefix(fullName, SessionPrefix) {
-			continue
-		}
-
-		attached, _ := strconv.Atoi(parts[1])
-		createdUnix, _ := strconv.ParseInt(parts[2], 10, 64)
-
-		sessions = append(sessions, SessionInfo{
-			Name:          strings.TrimPrefix(fullName, SessionPrefix),
-			FullName:      fullName,
-			AttachedCount: attached,
-			Created:       time.Unix(createdUnix, 0),
-		})
-	}
-	return sessions, nil
+	return string(out), nil
 }
 
 // CapturePaneOutput captures the last N lines from a tmux pane.

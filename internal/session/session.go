@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/simon/crabctl/internal/tmux"
@@ -34,10 +35,12 @@ func (s Status) String() string {
 type Session struct {
 	Name          string
 	FullName      string
+	Host          string // empty for local, nickname for remote
 	Status        Status
 	Mode          string // "bypass", "plan", "", etc.
 	LastAction    string // e.g. "Write(/tmp/foo.txt)", "Done."
 	Duration      time.Duration
+	LastActive    time.Time // most recent Claude session file mtime
 	AttachedCount int
 	WorkDir       string
 }
@@ -62,12 +65,81 @@ func List() ([]Session, error) {
 			Mode:          mode,
 			LastAction:    lastAction,
 			Duration:      time.Since(info.Created),
+			LastActive:    findLatestSessionFile(workDir),
 			AttachedCount: info.AttachedCount,
 			WorkDir:       workDir,
 		})
 	}
 	sortSessions(sessions)
 	return sessions, nil
+}
+
+// ListAll returns sessions from all executors, merging results.
+func ListAll(executors []tmux.Executor) ([]Session, error) {
+	if len(executors) == 0 {
+		return List()
+	}
+
+	type result struct {
+		sessions []Session
+		err      error
+	}
+
+	results := make([]result, len(executors))
+	var wg sync.WaitGroup
+
+	for i, exec := range executors {
+		wg.Add(1)
+		go func(idx int, ex tmux.Executor) {
+			defer wg.Done()
+			host := ex.HostName()
+			prefix := tmux.SessionPrefix
+
+			infos, err := ex.ListSessions(prefix)
+			if err != nil {
+				results[idx] = result{err: err}
+				return
+			}
+
+			sessions := make([]Session, 0, len(infos))
+			for _, info := range infos {
+				output, _ := ex.CapturePaneOutput(info.FullName, 25)
+				status, mode, lastAction := analyzeOutput(output)
+				workDir := ex.GetPanePath(info.FullName)
+
+				var lastActive time.Time
+				if host == "" {
+					lastActive = findLatestSessionFile(workDir)
+				}
+
+				sessions = append(sessions, Session{
+					Name:          info.Name,
+					FullName:      info.FullName,
+					Host:          host,
+					Status:        status,
+					Mode:          mode,
+					LastAction:    lastAction,
+					Duration:      time.Since(info.Created),
+					LastActive:    lastActive,
+					AttachedCount: info.AttachedCount,
+					WorkDir:       workDir,
+				})
+			}
+			results[idx] = result{sessions: sessions}
+		}(i, exec)
+	}
+
+	wg.Wait()
+
+	var all []Session
+	for _, r := range results {
+		if r.err != nil {
+			continue // skip hosts that failed
+		}
+		all = append(all, r.sessions...)
+	}
+	sortSessions(all)
+	return all, nil
 }
 
 // statusPriority returns sort priority (lower = more important, shown first).
@@ -226,16 +298,6 @@ func detectLastAction(lines []string) string {
 		}
 	}
 	return ""
-}
-
-// Send sends text to a session.
-func Send(fullName, text string) error {
-	return tmux.SendKeys(fullName, text)
-}
-
-// Kill kills a session (Ctrl-C + kill).
-func Kill(fullName string) error {
-	return tmux.KillSession(fullName)
 }
 
 // FormatDuration formats a duration for display.

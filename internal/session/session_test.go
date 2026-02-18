@@ -295,6 +295,24 @@ func TestSortSessions(t *testing.T) {
 	}
 }
 
+func TestEncodeProjectDir(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/Users/simon/git/crabctl", "-Users-simon-git-crabctl"},
+		{"/home/user/project", "-home-user-project"},
+		{"/tmp", "-tmp"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := encodeProjectDir(tt.input)
+		if got != tt.want {
+			t.Errorf("encodeProjectDir(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		seconds int

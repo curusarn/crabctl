@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -126,13 +127,32 @@ func (m Model) View() string {
 		b.WriteString(fmt.Sprintf("  Error: %v\n\n", m.err))
 	} else {
 		// Table header
-		header := fmt.Sprintf("    %-16s %-20s %-12s %-8s %-8s %-10s %s",
-			"NAME", "DIR", "STATUS", "MODE", "DURATION", "ATTACHED", "LAST ACTION")
-		b.WriteString(headerStyle.Render(header))
+		showHost := m.hasRemoteHosts()
+		if showHost {
+			header := fmt.Sprintf("    %-10s %-16s %-20s %-12s %-8s %-8s %-10s %s",
+				"HOST", "NAME", "DIR", "STATUS", "MODE", "ACTIVE", "ATTACHED", "LAST ACTION")
+			b.WriteString(headerStyle.Render(header))
+		} else {
+			header := fmt.Sprintf("    %-16s %-20s %-12s %-8s %-8s %-10s %s",
+				"NAME", "DIR", "STATUS", "MODE", "ACTIVE", "ATTACHED", "LAST ACTION")
+			b.WriteString(headerStyle.Render(header))
+		}
 		b.WriteString("\n")
 
-		// Rows
-		for i, s := range m.filtered {
+		// Rows (windowed when previewing)
+		maxVis := m.maxVisibleSessions()
+		end := m.scrollOffset + maxVis
+		if end > len(m.filtered) {
+			end = len(m.filtered)
+		}
+
+		if m.scrollOffset > 0 {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↑ %d more", m.scrollOffset)))
+			b.WriteString("\n")
+		}
+
+		for i := m.scrollOffset; i < end; i++ {
+			s := m.filtered[i]
 			name := s.Name
 			if len(name) > 16 {
 				name = name[:13] + "..."
@@ -141,12 +161,21 @@ func (m Model) View() string {
 			dir := shortenPath(s.WorkDir, 20)
 			statusStr := renderStatus(s.Status)
 			modeStr := renderMode(s.Mode)
-			dur := session.FormatDuration(s.Duration)
+			active := formatActive(s)
 			attached := renderAttached(s.AttachedCount)
 			action := renderAction(s.LastAction)
 
 			// Build row with manual padding to handle styled strings
-			row := " " + pad(name, 16) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(dur, 8) + " " + pad(attached, 10) + " " + action
+			var row string
+			if showHost {
+				host := s.Host
+				if host == "" {
+					host = "local"
+				}
+				row = " " + pad(host, 10) + " " + pad(name, 16) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
+			} else {
+				row = " " + pad(name, 16) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
+			}
 
 			if i == m.cursor {
 				b.WriteString(cursorStyle.Render(" >"))
@@ -155,6 +184,11 @@ func (m Model) View() string {
 				b.WriteString("  ")
 				b.WriteString(row)
 			}
+			b.WriteString("\n")
+		}
+
+		if end < len(m.filtered) {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↓ %d more", len(m.filtered)-end)))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
@@ -174,9 +208,16 @@ func (m Model) View() string {
 		if m.preview.Output != "" {
 			previewLines := strings.Split(m.preview.Output, "\n")
 
-			// Budget: title+blank(2) + header(1) + sessions + gap(1) + borders(2) + input(1) + help(1) + safety(1) = 9 + sessions
-			// Preview fills all remaining terminal height
-			overhead := 9 + len(m.filtered)
+			// Budget: title+blank(2) + header(1) + visible sessions + scroll indicators + gap(1) + borders(2) + input(1) + help(1) + safety(1)
+			visibleRows := m.maxVisibleSessions()
+			scrollIndicators := 0
+			if m.scrollOffset > 0 {
+				scrollIndicators++
+			}
+			if m.scrollOffset+visibleRows < len(m.filtered) {
+				scrollIndicators++
+			}
+			overhead := 9 + visibleRows + scrollIndicators
 			maxPreview := m.height - overhead
 			if maxPreview < 3 {
 				maxPreview = 3
@@ -222,8 +263,10 @@ func (m Model) View() string {
 		b.WriteString(confirmDimStyle.Render("cancel"))
 	} else if m.preview != nil {
 		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+k kill"))
+	} else if strings.HasPrefix(m.input.Value(), "/new") {
+		b.WriteString(helpStyle.Render("/new <name> [dir]  —  create a new session"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  j/k navigate  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  /new <name>  j/k navigate  ctrl+k kill  q quit"))
 	}
 	b.WriteString("\n")
 
@@ -255,6 +298,13 @@ func renderAction(action string) string {
 		return ""
 	}
 	return actionStyle.Render(action)
+}
+
+func formatActive(s session.Session) string {
+	if !s.LastActive.IsZero() {
+		return session.FormatDuration(time.Since(s.LastActive))
+	}
+	return session.FormatDuration(s.Duration)
 }
 
 func renderAttached(count int) string {

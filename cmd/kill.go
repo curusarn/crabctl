@@ -12,20 +12,21 @@ import (
 )
 
 var killCmd = &cobra.Command{
-	Use:   "kill <name>",
+	Use:   "kill <[host:]name>",
 	Short: "Kill a Claude session",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
+		host, name := parseHostName(args[0])
+		exec := resolveExecutor(host)
 		fullName := tmux.SessionPrefix + name
 
-		if !tmux.HasSession(fullName) {
-			return fmt.Errorf("session %q not found", name)
+		if !exec.HasSession(fullName) {
+			return fmt.Errorf("session %q not found", args[0])
 		}
 
 		force, _ := cmd.Flags().GetBool("force")
 		if !force {
-			fmt.Printf("Kill session %q? [y/N] ", name)
+			fmt.Printf("Kill session %q? [y/N] ", args[0])
 			reader := bufio.NewReader(os.Stdin)
 			answer, _ := reader.ReadString('\n')
 			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y") {
@@ -34,11 +35,11 @@ var killCmd = &cobra.Command{
 			}
 		}
 
-		if err := tmux.KillSession(fullName); err != nil {
+		if err := exec.KillSession(fullName); err != nil {
 			return fmt.Errorf("failed to kill session: %w", err)
 		}
 
-		fmt.Printf("Killed session %q\n", name)
+		fmt.Printf("Killed session %q\n", args[0])
 		return nil
 	},
 }
