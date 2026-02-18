@@ -19,6 +19,16 @@ export PATH="$HOME/git/crabctl/bin:$PATH"
 
 Then restart your shell or run `source ~/.zshrc`.
 
+## Quickstart
+
+- Run non-tmuxed Claude in the repo — there's a `CLAUDE.md` and `/crabs` skill
+- Ask it to delegate to `/crabs`
+- Use `crabctl` to manage running crabs (tmuxed Claude sessions)
+  - Double Enter to open a session
+  - Enter + type + Enter to send a one-off message to an agent
+- `crabctl new my-session-name` to launch a new crab manually
+  - :warning: Bypasses permissions by default
+
 ## Tips
 
 ### Enable mouse scrolling in tmux
