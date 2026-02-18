@@ -117,36 +117,33 @@ func analyzeOutput(output string) (Status, string, string) {
 }
 
 func detectStatus(lines []string) Status {
-	// 1. Check status bar for definitive indicators (present on any line)
+	// 1. "esc to interrupt" anywhere = actively running (very specific string)
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// "esc to interrupt" in status bar = actively running
-		if strings.Contains(trimmed, "esc to interrupt") {
+		if strings.Contains(strings.TrimSpace(line), "esc to interrupt") {
 			return Running
-		}
-
-		// Permission prompt indicators
-		if isPermissionLine(trimmed) {
-			return Permission
 		}
 	}
 
-	// 2. Scan bottom-up for prompt or active spinner near the bottom.
+	// 2. Scan bottom-up for prompt, permission, or spinner near the bottom.
 	// Check up to 10 non-decoration content lines to handle cases where
 	// UI elements (plan approval menus, selection items) appear between
 	// the prompt and the bottom of the screen.
+	// Permission is checked here (not all-lines) to avoid false positives
+	// from output content that happens to contain "allow" and "deny".
 	contentLines := 0
 	for i := len(lines) - 1; i >= 0 && contentLines < 10; i-- {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		// Skip status/mode bar and decoration lines
 		if isDecorationLine(trimmed) {
 			continue
 		}
 		contentLines++
+		// Permission prompt near the bottom
+		if isPermissionLine(trimmed) {
+			return Permission
+		}
 		// Bare prompt = waiting
 		// Note: Claude uses \u00a0 (non-breaking space) after ❯
 		if trimmed == "❯" || trimmed == ">" || strings.HasPrefix(trimmed, "❯") {
@@ -165,12 +162,14 @@ func detectStatus(lines []string) Status {
 }
 
 func isDecorationLine(trimmed string) bool {
-	return strings.Contains(trimmed, "bypass permissions") ||
-		strings.Contains(trimmed, "shift+tab") ||
-		strings.Contains(trimmed, "auto-accept") ||
-		strings.Contains(trimmed, "plan mode") ||
-		strings.Contains(trimmed, "for shortcuts") ||
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "bypass permissions on") ||
+		strings.Contains(lower, "shift+tab") ||
+		strings.Contains(lower, "auto-accept") ||
+		strings.Contains(lower, "plan mode on") ||
+		strings.Contains(lower, "for shortcuts") ||
 		strings.HasPrefix(trimmed, "───") ||
+		strings.HasPrefix(trimmed, "╌") ||
 		strings.HasPrefix(trimmed, "╭") ||
 		strings.HasPrefix(trimmed, "╰") ||
 		strings.HasPrefix(trimmed, "│")
