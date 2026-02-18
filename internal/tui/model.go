@@ -340,7 +340,8 @@ func cleanPreviewOutput(output string) string {
 			strings.Contains(trimmed, "shift+tab") ||
 			strings.Contains(trimmed, "auto-accept") ||
 			strings.Contains(trimmed, "plan mode") ||
-			strings.Contains(trimmed, "esc to interrupt") {
+			strings.Contains(trimmed, "esc to interrupt") ||
+			strings.Contains(trimmed, "for shortcuts") {
 			continue
 		}
 

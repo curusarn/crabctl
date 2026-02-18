@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,7 +66,34 @@ func List() ([]Session, error) {
 			WorkDir:       workDir,
 		})
 	}
+	sortSessions(sessions)
 	return sessions, nil
+}
+
+// statusPriority returns sort priority (lower = more important, shown first).
+func statusPriority(s Status) int {
+	switch s {
+	case Permission:
+		return 0
+	case Running:
+		return 1
+	case Waiting:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// sortSessions sorts by status priority, then by duration (shortest first,
+// meaning most recently created sessions appear first within each group).
+func sortSessions(sessions []Session) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		pi, pj := statusPriority(sessions[i].Status), statusPriority(sessions[j].Status)
+		if pi != pj {
+			return pi < pj
+		}
+		return sessions[i].Duration < sessions[j].Duration
+	})
 }
 
 // analyzeOutput extracts status, mode, and last action from captured pane output.
@@ -89,9 +117,7 @@ func analyzeOutput(output string) (Status, string, string) {
 }
 
 func detectStatus(lines []string) Status {
-	// Strategy: scan bottom-up for the most relevant indicator.
-	// The status bar at the very bottom tells us the most.
-
+	// 1. Check status bar for definitive indicators (present on any line)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
@@ -106,49 +132,48 @@ func detectStatus(lines []string) Status {
 		}
 	}
 
-	// Check for running indicators: ✽/✻ (thinking/doing spinners)
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "✽") || strings.HasPrefix(trimmed, "✻") {
+	// 2. Scan bottom-up for prompt or active spinner near the bottom.
+	// Check up to 10 non-decoration content lines to handle cases where
+	// UI elements (plan approval menus, selection items) appear between
+	// the prompt and the bottom of the screen.
+	contentLines := 0
+	for i := len(lines) - 1; i >= 0 && contentLines < 10; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		// Skip status/mode bar and decoration lines
+		if isDecorationLine(trimmed) {
+			continue
+		}
+		contentLines++
+		// Bare prompt = waiting
+		// Note: Claude uses \u00a0 (non-breaking space) after ❯
+		if trimmed == "❯" || trimmed == ">" || strings.HasPrefix(trimmed, "❯") {
+			return Waiting
+		}
+		// Active spinner near the bottom = running
+		if strings.HasPrefix(trimmed, "✽") || strings.HasPrefix(trimmed, "✻") || strings.HasPrefix(trimmed, "✶") {
 			return Running
 		}
-		// Braille spinner characters
 		if strings.ContainsAny(trimmed, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {
 			return Running
 		}
 	}
 
-	// Check for idle prompt: bare ❯ on its own line (with nothing after it,
-	// or just whitespace), appearing near the bottom
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" {
-			continue
-		}
-		// Skip the status/mode bar lines
-		if strings.Contains(trimmed, "bypass permissions") ||
-			strings.Contains(trimmed, "shift+tab") ||
-			strings.Contains(trimmed, "auto-accept") ||
-			strings.Contains(trimmed, "plan mode") ||
-			strings.HasPrefix(trimmed, "───") ||
-			strings.HasPrefix(trimmed, "╭") ||
-			strings.HasPrefix(trimmed, "╰") ||
-			strings.HasPrefix(trimmed, "│") {
-			continue
-		}
-		// Bare prompt = waiting
-		// Note: Claude uses \u00a0 (non-breaking space) after ❯
-		if trimmed == "❯" || trimmed == ">" {
-			return Waiting
-		}
-		if strings.HasPrefix(trimmed, "❯") {
-			return Waiting
-		}
-		// If we hit a non-prompt, non-decoration line, stop looking
-		break
-	}
-
 	return Unknown
+}
+
+func isDecorationLine(trimmed string) bool {
+	return strings.Contains(trimmed, "bypass permissions") ||
+		strings.Contains(trimmed, "shift+tab") ||
+		strings.Contains(trimmed, "auto-accept") ||
+		strings.Contains(trimmed, "plan mode") ||
+		strings.Contains(trimmed, "for shortcuts") ||
+		strings.HasPrefix(trimmed, "───") ||
+		strings.HasPrefix(trimmed, "╭") ||
+		strings.HasPrefix(trimmed, "╰") ||
+		strings.HasPrefix(trimmed, "│")
 }
 
 func isPermissionLine(line string) bool {
