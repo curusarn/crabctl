@@ -52,6 +52,12 @@ type confirmAction struct {
 	Host        string
 }
 
+// RestoreState carries state between TUI restarts (after detaching from a session).
+type RestoreState struct {
+	FocusSession string             // name of session to re-focus
+	Sessions     []session.Session  // cached sessions to avoid blank screen
+}
+
 type Model struct {
 	sessions      []session.Session
 	filtered      []session.Session
@@ -63,6 +69,7 @@ type Model struct {
 	executors     []tmux.Executor
 	remoteLoading map[string]bool // hosts still being fetched
 	spinnerFrame  int
+	restore       *RestoreState
 	width, height int
 	AttachTarget  string // set when user confirms attach
 	AttachHost    string // host of session to attach
@@ -70,7 +77,21 @@ type Model struct {
 	err           error
 }
 
-func NewModel(executors []tmux.Executor) Model {
+// GetRestoreState extracts state to carry over to the next TUI instance.
+func (m Model) GetRestoreState() *RestoreState {
+	focus := ""
+	if sel := m.selectedSession(); sel != nil {
+		focus = sel.FullName
+	} else if m.AttachTarget != "" {
+		focus = m.AttachTarget
+	}
+	return &RestoreState{
+		FocusSession: focus,
+		Sessions:     m.sessions,
+	}
+}
+
+func NewModel(executors []tmux.Executor, restore *RestoreState) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter or enter command..."
 	ti.Prompt = ""
@@ -85,11 +106,28 @@ func NewModel(executors []tmux.Executor) Model {
 		}
 	}
 
-	return Model{
+	m := Model{
 		input:         ti,
 		executors:     executors,
 		remoteLoading: loading,
 	}
+
+	// Restore cached sessions and focus from previous TUI instance
+	if restore != nil {
+		m.restore = restore
+		if len(restore.Sessions) > 0 {
+			m.sessions = restore.Sessions
+			m.filtered = restore.Sessions
+			// Don't mark remote hosts as loading if we already have their sessions
+			for _, s := range restore.Sessions {
+				if s.Host != "" {
+					delete(m.remoteLoading, s.Host)
+				}
+			}
+		}
+	}
+
+	return m
 }
 
 func spinnerTickCmd() tea.Cmd {
@@ -186,6 +224,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		session.SortSessions(m.sessions)
 		if m.preview == nil {
 			m.applyFilter()
+		}
+		// Restore focus on first refresh after restart
+		if m.restore != nil {
+			m.focusSession(m.restore.FocusSession)
+			m.restore = nil
 		}
 		return m, nil
 
@@ -469,6 +512,17 @@ func (m *Model) applyFilter() {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
 	m.ensureCursorVisible()
+}
+
+// focusSession moves the cursor to the session with the given fullName.
+func (m *Model) focusSession(fullName string) {
+	for i, s := range m.filtered {
+		if s.FullName == fullName {
+			m.cursor = i
+			m.ensureCursorVisible()
+			return
+		}
+	}
 }
 
 func (m Model) maxVisibleSessions() int {

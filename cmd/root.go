@@ -42,9 +42,10 @@ var rootCmd = &cobra.Command{
 	Short: "Manage Claude Code sessions in tmux",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		executors := buildExecutors()
+		var restore *tui.RestoreState
 
 		for {
-			m := tui.NewModel(executors)
+			m := tui.NewModel(executors, restore)
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 			finalModel, err := p.Run()
@@ -56,6 +57,9 @@ var rootCmd = &cobra.Command{
 			if final.AttachTarget == "" {
 				break
 			}
+
+			// Save state for next TUI instance
+			restore = final.GetRestoreState()
 
 			// Attach via the correct executor
 			exec := findExecutorByHost(executors, final.AttachHost)
