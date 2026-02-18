@@ -47,6 +47,20 @@ Always use `-l` flag for literal text (prevents key name interpretation).
 - When crabs work on the same repo, coordinate who commits/pushes to avoid conflicts
 - Provide full context in messages (repo state, what other sessions did) since crabs don't share memory
 
+## Using crabctl as an LLM orchestrator
+
+crabctl can be used to run multiple Claude Code instances in parallel as autonomous workers:
+
+```bash
+crabctl new worker-1 --dir /path/to/repo    # Create session with Claude Code
+crabctl new worker-2 --dir /path/to/repo    # Create another
+crabctl send worker-1 'implement feature X'  # Send task
+crabctl send worker-2 'fix bug Y'            # Send task
+crabctl                                       # TUI to monitor all sessions
+```
+
+Each crab session is an independent Claude Code instance running in tmux. They don't share memory — coordinate via explicit messages. The `/crabs` skill (`.claude/skills/crabs/`) automates status checking, message sending, and new session creation from within a Claude Code session.
+
 ## Release
 
 Tags trigger GitHub Actions → goreleaser → GitHub Release + homebrew tap (curusarn/homebrew-tap).
