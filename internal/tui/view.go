@@ -55,9 +55,19 @@ var (
 	actionStyle = lipgloss.NewStyle().
 			Foreground(dimColor)
 
-	confirmStyle = lipgloss.NewStyle().
-			Foreground(yellowColor).
+	confirmLabelStyle = lipgloss.NewStyle().
+				Foreground(redColor).
+				Bold(true).
+				PaddingLeft(1)
+
+	confirmKeyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#FFFFFF"}).
+			Background(redColor).
 			Bold(true).
+			Padding(0, 1)
+
+	confirmDimStyle = lipgloss.NewStyle().
+			Foreground(dimColor).
 			PaddingLeft(1)
 
 	helpStyle = lipgloss.NewStyle().
@@ -176,20 +186,21 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Kill confirmation bar
-	if m.confirmKill != nil {
-		msg := fmt.Sprintf("Kill '%s'? [Enter] confirm  [Esc] cancel", m.confirmKill.SessionName)
-		b.WriteString(confirmStyle.Render(msg))
-		b.WriteString("\n")
-	}
-
 	// Input line
 	b.WriteString(inputLabelStyle.Render(" > "))
 	b.WriteString(m.input.View())
 	b.WriteString("\n")
 
-	// Help bar
-	if m.preview != nil {
+	// Help bar / kill confirmation (same slot to avoid layout shift)
+	if m.confirmKill != nil {
+		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("Kill '%s'?", m.confirmKill.SessionName)))
+		b.WriteString("  ")
+		b.WriteString(confirmKeyStyle.Render("Enter"))
+		b.WriteString(confirmDimStyle.Render("confirm"))
+		b.WriteString("  ")
+		b.WriteString(confirmKeyStyle.Render("Esc"))
+		b.WriteString(confirmDimStyle.Render("cancel"))
+	} else if m.preview != nil {
 		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+k kill"))
 	} else {
 		b.WriteString(helpStyle.Render("enter preview  j/k navigate  ctrl+k kill  q quit"))
