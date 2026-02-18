@@ -232,23 +232,18 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	msgStr := msg.String()
 
-	// Arrow keys always close preview and navigate
-	// j/k only close preview when input is empty (otherwise they're text)
+	// Arrow keys / j/k navigate and switch preview to the new session
 	if msgStr == "up" || (msgStr == "k" && m.input.Value() == "") {
-		m.preview = nil
-		m.input.SetValue("")
-		m.applyFilter()
 		if m.cursor > 0 {
 			m.cursor--
+			return m, m.switchPreview()
 		}
 		return m, nil
 	}
 	if msgStr == "down" || (msgStr == "j" && m.input.Value() == "") {
-		m.preview = nil
-		m.input.SetValue("")
-		m.applyFilter()
 		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
+			return m, m.switchPreview()
 		}
 		return m, nil
 	}
@@ -313,6 +308,20 @@ func (m Model) selectedSession() *session.Session {
 	}
 	s := m.filtered[m.cursor]
 	return &s
+}
+
+// switchPreview updates the preview to show the currently selected session.
+func (m *Model) switchPreview() tea.Cmd {
+	sel := m.selectedSession()
+	if sel == nil {
+		return nil
+	}
+	m.preview = &previewState{
+		SessionName: sel.Name,
+		FullName:    sel.FullName,
+	}
+	m.input.SetValue("")
+	return capturePreviewCmd(sel.FullName)
 }
 
 func sendToSession(fullName, text string) error {
