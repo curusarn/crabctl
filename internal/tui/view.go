@@ -122,23 +122,14 @@ func (m Model) View() string {
 	b.WriteString(titleStyle.Render("crabctl"))
 	b.WriteString("\n\n")
 
-	if len(m.sessions) == 0 && m.err == nil {
+	if m.resumeMode {
+		m.renderResumeList(&b)
+	} else if len(m.sessions) == 0 && m.err == nil {
 		b.WriteString("  No sessions. Run: crabctl new <name>\n\n")
 	} else if m.err != nil {
 		b.WriteString(fmt.Sprintf("  Error: %v\n\n", m.err))
 	} else {
-		// Table header
 		showHost := m.hasRemoteHosts()
-		if showHost {
-			header := fmt.Sprintf("    %-10s %-32s %-20s %-12s %-8s %-8s %-10s %s",
-				"HOST", "NAME", "DIR", "STATUS", "MODE", "ACTIVE", "ATTACHED", "LAST ACTION")
-			b.WriteString(headerStyle.Render(header))
-		} else {
-			header := fmt.Sprintf("    %-32s %-20s %-12s %-8s %-8s %-10s %s",
-				"NAME", "DIR", "STATUS", "MODE", "ACTIVE", "ATTACHED", "LAST ACTION")
-			b.WriteString(headerStyle.Render(header))
-		}
-		b.WriteString("\n")
 
 		// Rows (windowed when previewing)
 		maxVis := m.maxVisibleSessions()
@@ -148,6 +139,100 @@ func (m Model) View() string {
 		}
 		scrollable := len(m.filtered) > maxVis
 
+		// Precompute cell values for visible rows
+		type rowData struct {
+			host, name, dir, status, mode, info, changes string
+		}
+		rows := make([]rowData, 0, end-m.scrollOffset)
+		for i := m.scrollOffset; i < end; i++ {
+			s := m.filtered[i]
+			name := s.Name
+			if len(name) > 32 {
+				name = name[:29] + "..."
+			}
+			host := s.Host
+			if host == "" && showHost {
+				host = "local"
+			}
+			rows = append(rows, rowData{
+				host:    host,
+				name:    name,
+				dir:     shortenPath(s.WorkDir, 20),
+				status:  renderStatusWithAge(s),
+				mode:    renderMode(s.Mode),
+				info:    renderInfo(s),
+				changes: renderChanges(s),
+			})
+		}
+
+		// Measure column widths (using lipgloss.Width for ANSI-aware measurement)
+		type colSpec struct {
+			min, max, width int
+			header          string
+		}
+		cols := []colSpec{
+			{min: 4, max: 32, header: "NAME"},
+			{min: 4, max: 20, header: "DIR"},
+			{min: 7, max: 14, header: "STATUS"},
+			{min: 4, max: 8, header: "MODE"},
+			{min: 4, max: 40, header: "INFO"},
+		}
+		hostCol := colSpec{min: 4, max: 10, header: "HOST"}
+
+		// Measure from data
+		for _, r := range rows {
+			vals := []string{r.name, r.dir, r.status, r.mode, r.info}
+			for j, v := range vals {
+				w := lipgloss.Width(v)
+				if w > cols[j].width {
+					cols[j].width = w
+				}
+			}
+			if showHost {
+				w := lipgloss.Width(r.host)
+				if w > hostCol.width {
+					hostCol.width = w
+				}
+			}
+		}
+		// Also measure headers, then clamp
+		for j := range cols {
+			hw := len(cols[j].header)
+			if hw > cols[j].width {
+				cols[j].width = hw
+			}
+			if cols[j].width < cols[j].min {
+				cols[j].width = cols[j].min
+			}
+			if cols[j].width > cols[j].max {
+				cols[j].width = cols[j].max
+			}
+		}
+		if showHost {
+			hw := len(hostCol.header)
+			if hw > hostCol.width {
+				hostCol.width = hw
+			}
+			if hostCol.width < hostCol.min {
+				hostCol.width = hostCol.min
+			}
+			if hostCol.width > hostCol.max {
+				hostCol.width = hostCol.max
+			}
+		}
+
+		wName, wDir, wStatus, wMode, wInfo := cols[0].width, cols[1].width, cols[2].width, cols[3].width, cols[4].width
+
+		// Render header
+		if showHost {
+			header := "    " + pad("HOST", hostCol.width) + "  " + pad("NAME", wName) + "  " + pad("DIR", wDir) + "  " + pad("STATUS", wStatus) + "  " + pad("MODE", wMode) + "  " + pad("INFO", wInfo) + "  CHANGES"
+			b.WriteString(headerStyle.Render(header))
+		} else {
+			header := "    " + pad("NAME", wName) + "  " + pad("DIR", wDir) + "  " + pad("STATUS", wStatus) + "  " + pad("MODE", wMode) + "  " + pad("INFO", wInfo) + "  CHANGES"
+			b.WriteString(headerStyle.Render(header))
+		}
+		b.WriteString("\n")
+
 		// Reserve constant height: when scrollable, always show both indicator lines
 		if scrollable {
 			if m.scrollOffset > 0 {
@@ -156,30 +241,14 @@ func (m Model) View() string {
 			b.WriteString("\n")
 		}
 
-		for i := m.scrollOffset; i < end; i++ {
-			s := m.filtered[i]
-			name := s.Name
-			if len(name) > 32 {
-				name = name[:29] + "..."
-			}
-
-			dir := shortenPath(s.WorkDir, 20)
-			statusStr := renderStatus(s.Status)
-			modeStr := renderMode(s.Mode)
-			active := formatActive(s)
-			attached := renderAttached(s.AttachedCount)
-			action := renderAction(s.LastAction)
-
-			// Build row with manual padding to handle styled strings
+		// Render rows
+		for ri, r := range rows {
+			i := m.scrollOffset + ri
 			var row string
 			if showHost {
-				host := s.Host
-				if host == "" {
-					host = "local"
-				}
-				row = " " + pad(host, 10) + " " + pad(name, 32) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
+				row = " " + pad(r.host, hostCol.width) + "  " + pad(r.name, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + r.changes
 			} else {
-				row = " " + pad(name, 32) + " " + pad(dir, 20) + " " + pad(statusStr, 12) + " " + pad(modeStr, 8) + " " + pad(active, 8) + " " + pad(attached, 10) + " " + action
+				row = " " + pad(r.name, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + r.changes
 			}
 
 			if i == m.cursor {
@@ -266,7 +335,7 @@ func (m Model) View() string {
 
 	// Input line (placeholder changes based on mode)
 	if m.preview != nil {
-		m.input.Placeholder = "Type and press Enter to send a message to the session..."
+		m.input.Placeholder = "Type and press enter to send a message to the session..."
 	} else {
 		m.input.Placeholder = "Type to filter or enter command..."
 	}
@@ -283,24 +352,85 @@ func (m Model) View() string {
 		b.WriteString("  ")
 		b.WriteString(confirmKeyStyle.Render("Esc"))
 		b.WriteString(confirmDimStyle.Render("cancel"))
+	} else if m.resumeMode {
+		b.WriteString(helpStyle.Render("enter resume  type to filter  j/k navigate  esc back"))
 	} else if m.preview != nil {
 		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+k kill"))
 	} else if strings.HasPrefix(m.input.Value(), "/new") {
 		b.WriteString(helpStyle.Render("/new <name> [dir]  —  create a new session"))
+	} else if strings.HasPrefix(m.input.Value(), "/resume") {
+		b.WriteString(helpStyle.Render("/resume  —  browse and resume past Claude sessions"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  /new <name>  j/k navigate  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  /new  /resume  j/k navigate  ctrl+k kill  q quit"))
 	}
 	b.WriteString("\n")
 
 	return b.String()
 }
 
-func renderStatus(s session.Status) string {
-	switch s {
+func (m Model) renderResumeList(b *strings.Builder) {
+	b.WriteString(headerStyle.Render("  Resume a past Claude session"))
+	b.WriteString("\n\n")
+
+	if len(m.resumeFiltered) == 0 {
+		b.WriteString("  No matching sessions found.\n\n")
+		return
+	}
+
+	header := fmt.Sprintf("    %-8s %-30s %s", "AGE", "PROJECT", "MESSAGE")
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
+	// Show up to 20 visible sessions
+	maxVis := 20
+	if m.height > 0 {
+		maxVis = m.height - 10
+		if maxVis < 5 {
+			maxVis = 5
+		}
+	}
+	start := 0
+	if m.resumeCursor >= maxVis {
+		start = m.resumeCursor - maxVis + 1
+	}
+	end := start + maxVis
+	if end > len(m.resumeFiltered) {
+		end = len(m.resumeFiltered)
+	}
+
+	for i := start; i < end; i++ {
+		cs := m.resumeFiltered[i]
+		age := session.FormatDuration(time.Since(cs.ModTime))
+		project := shortenPath(cs.ProjectDir, 30)
+		msg := cs.FirstMessage
+		if len(msg) > 50 {
+			msg = msg[:47] + "..."
+		}
+
+		row := " " + pad(age, 8) + " " + pad(project, 30) + " " + actionStyle.Render(msg)
+
+		if i == m.resumeCursor {
+			b.WriteString(cursorStyle.Render(" >"))
+			b.WriteString(selectedRowStyle.Render(row))
+		} else {
+			b.WriteString("  ")
+			b.WriteString(row)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+}
+
+func renderStatusWithAge(s session.Session) string {
+	switch s.Status {
 	case session.Running:
 		return statusRunning.Render("running")
 	case session.Waiting:
-		return statusWaiting.Render("waiting")
+		label := statusWaiting.Render("waiting")
+		if !s.LastActive.IsZero() {
+			label += " " + actionStyle.Render(session.FormatDurationCoarse(time.Since(s.LastActive)))
+		}
+		return label
 	case session.Permission:
 		return statusPermission.Render("permission")
 	default:
@@ -322,19 +452,29 @@ func renderAction(action string) string {
 	return actionStyle.Render(action)
 }
 
-func formatActive(s session.Session) string {
-	if !s.LastActive.IsZero() {
-		return session.FormatDuration(time.Since(s.LastActive))
+func renderInfo(s session.Session) string {
+	var parts []string
+
+	if s.LastAction != "" {
+		parts = append(parts, actionStyle.Render(s.LastAction))
 	}
-	return session.FormatDuration(s.Duration)
+	if s.Context != "" {
+		parts = append(parts, statusPermission.Render("ctx:"+s.Context))
+	}
+
+	return strings.Join(parts, actionStyle.Render(" · "))
 }
 
-func renderAttached(count int) string {
-	if count == 0 {
-		return "no"
+func renderChanges(s session.Session) string {
+	var parts []string
+
+	if s.GitChanges != "" {
+		parts = append(parts, actionStyle.Render(s.GitChanges))
 	}
-	if count == 1 {
-		return "yes"
+	if s.PR != "" {
+		parts = append(parts, modeStyle.Render(s.PR))
 	}
-	return fmt.Sprintf("yes (%d)", count)
+
+	return strings.Join(parts, actionStyle.Render(" · "))
 }
+

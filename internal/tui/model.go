@@ -35,6 +35,8 @@ type remoteSessionsMsg struct {
 	Sessions []session.Session
 }
 
+type claudeSessionsMsg []session.ClaudeSession
+
 type previewOutputMsg struct {
 	Output string
 }
@@ -70,11 +72,16 @@ type Model struct {
 	remoteLoading map[string]bool // hosts still being fetched
 	spinnerFrame  int
 	restore       *RestoreState
-	width, height int
-	AttachTarget  string // set when user confirms attach
-	AttachHost    string // host of session to attach
-	quitting      bool
-	err           error
+	// Resume mode: browse past Claude sessions to resume
+	resumeMode     bool
+	resumeSessions []session.ClaudeSession
+	resumeFiltered []session.ClaudeSession
+	resumeCursor   int
+	width, height  int
+	AttachTarget   string // set when user confirms attach
+	AttachHost     string // host of session to attach
+	quitting       bool
+	err            error
 }
 
 // GetRestoreState extracts state to carry over to the next TUI instance.
@@ -96,7 +103,7 @@ func NewModel(executors []tmux.Executor, restore *RestoreState) Model {
 	ti.Placeholder = "Type to filter or enter command..."
 	ti.Prompt = ""
 	ti.Focus()
-	ti.CharLimit = 256
+	ti.CharLimit = 4096
 	ti.Width = 60
 
 	loading := make(map[string]bool)
@@ -210,11 +217,20 @@ func (m Model) findExecutor(host string) tmux.Executor {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
+	case claudeSessionsMsg:
+		m.resumeSessions = []session.ClaudeSession(msg)
+		m.resumeMode = true
+		m.resumeCursor = 0
+		m.input.SetValue("")
+		m.applyResumeFilter()
+		return m, nil
+
 	case sessionCreatedMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 		}
 		m.input.SetValue("")
+		m.resumeMode = false
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
@@ -305,6 +321,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmKill = nil
 			return m, nil
 		}
+		if m.resumeMode {
+			m.resumeMode = false
+			m.input.SetValue("")
+			m.applyFilter()
+			return m, nil
+		}
 		if m.preview != nil {
 			m.preview = nil
 			m.input.SetValue("")
@@ -326,8 +348,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Ctrl+K: kill selected session
-	if key.Matches(msg, keys.Kill) {
+	// Ctrl+K: kill selected session (not in resume mode)
+	if key.Matches(msg, keys.Kill) && !m.resumeMode {
 		if sel := m.selectedSession(); sel != nil {
 			m.confirmKill = &confirmAction{
 				SessionName: sel.Name,
@@ -338,10 +360,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// q quits only when input is empty and no preview
-	if key.Matches(msg, keys.Quit) && m.input.Value() == "" && m.preview == nil {
+	// q quits only when input is empty and no preview/resume
+	if key.Matches(msg, keys.Quit) && m.input.Value() == "" && m.preview == nil && !m.resumeMode {
 		m.quitting = true
 		return m, tea.Quit
+	}
+
+	// Resume mode key handling
+	if m.resumeMode {
+		return m.handleResumeKey(msg)
 	}
 
 	// Preview mode key handling
@@ -380,6 +407,13 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if cmd := parseNewCommand(text); cmd != nil {
 			m.input.SetValue("")
 			return m, cmd
+		}
+
+		// /resume command: browse past Claude sessions
+		if text == "/resume" || strings.HasPrefix(text, "/resume ") {
+			return m, func() tea.Msg {
+				return claudeSessionsMsg(session.ListRecentClaudeSessions(100))
+			}
 		}
 
 		// Open preview
@@ -461,6 +495,21 @@ func (m Model) switchPreview() (tea.Model, tea.Cmd) {
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// Ignore all mouse events in preview mode
 	if m.preview != nil {
+		return m, nil
+	}
+
+	// Resume mode: scroll wheel navigates claude sessions
+	if m.resumeMode {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			if m.resumeCursor > 0 {
+				m.resumeCursor--
+			}
+		case tea.MouseButtonWheelDown:
+			if m.resumeCursor < len(m.resumeFiltered)-1 {
+				m.resumeCursor++
+			}
+		}
 		return m, nil
 	}
 
@@ -626,6 +675,93 @@ func parseNewCommand(text string) tea.Cmd {
 		err := tmux.NewSession(name, workDir, claudeArgs)
 		return sessionCreatedMsg{Name: name, Err: err}
 	}
+}
+
+func (m Model) handleResumeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Navigation: j/k only when input is empty (arrow keys always work)
+	if m.input.Value() == "" {
+		if key.Matches(msg, keys.Up) {
+			if m.resumeCursor > 0 {
+				m.resumeCursor--
+			}
+			return m, nil
+		}
+		if key.Matches(msg, keys.Down) {
+			if m.resumeCursor < len(m.resumeFiltered)-1 {
+				m.resumeCursor++
+			}
+			return m, nil
+		}
+	} else {
+		// Arrow keys still navigate when filtering
+		if msg.Type == tea.KeyUp {
+			if m.resumeCursor > 0 {
+				m.resumeCursor--
+			}
+			return m, nil
+		}
+		if msg.Type == tea.KeyDown {
+			if m.resumeCursor < len(m.resumeFiltered)-1 {
+				m.resumeCursor++
+			}
+			return m, nil
+		}
+	}
+
+	// Enter: resume selected session
+	if key.Matches(msg, keys.Enter) {
+		sel := m.selectedClaudeSession()
+		if sel == nil {
+			return m, nil
+		}
+		cs := *sel
+		return m, func() tea.Msg {
+			name := "r-" + cs.UUID[:8]
+			fullName := tmux.SessionPrefix + name
+			if tmux.HasSession(fullName) {
+				return sessionCreatedMsg{Name: name, Err: fmt.Errorf("session %q already exists", name)}
+			}
+			claudeArgs := []string{"--dangerously-skip-permissions", "--resume", cs.UUID}
+			err := tmux.NewSession(name, cs.ProjectDir, claudeArgs)
+			return sessionCreatedMsg{Name: name, Err: err}
+		}
+	}
+
+	// Default: update text input and refilter
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.applyResumeFilter()
+	return m, cmd
+}
+
+func (m *Model) applyResumeFilter() {
+	query := strings.TrimSpace(m.input.Value())
+	if query == "" {
+		m.resumeFiltered = m.resumeSessions
+	} else {
+		lower := strings.ToLower(query)
+		m.resumeFiltered = nil
+		for _, cs := range m.resumeSessions {
+			if strings.Contains(strings.ToLower(cs.ProjectDir), lower) ||
+				strings.Contains(strings.ToLower(cs.FirstMessage), lower) {
+				m.resumeFiltered = append(m.resumeFiltered, cs)
+			}
+		}
+	}
+	if m.resumeCursor >= len(m.resumeFiltered) {
+		m.resumeCursor = max(0, len(m.resumeFiltered)-1)
+	}
+}
+
+func (m Model) selectedClaudeSession() *session.ClaudeSession {
+	if len(m.resumeFiltered) == 0 {
+		return nil
+	}
+	if m.resumeCursor < 0 || m.resumeCursor >= len(m.resumeFiltered) {
+		return nil
+	}
+	cs := m.resumeFiltered[m.resumeCursor]
+	return &cs
 }
 
 // cleanPreviewOutput strips Claude's TUI decoration from captured pane output.
