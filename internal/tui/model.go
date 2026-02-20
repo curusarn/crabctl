@@ -55,7 +55,8 @@ type autoForwardSentMsg struct {
 type claudeSessionsMsg []session.ClaudeSession
 
 type previewOutputMsg struct {
-	Output string
+	FullName string
+	Output   string
 }
 
 type previewState struct {
@@ -260,9 +261,9 @@ func (m Model) capturePreviewCmd(fullName, host string) tea.Cmd {
 	return func() tea.Msg {
 		output, err := exec.CapturePaneOutput(fullName, 50)
 		if err != nil {
-			return previewOutputMsg{Output: "Error: " + err.Error()}
+			return previewOutputMsg{FullName: fullName, Output: "Error: " + err.Error()}
 		}
-		return previewOutputMsg{Output: cleanPreviewOutput(output)}
+		return previewOutputMsg{FullName: fullName, Output: cleanPreviewOutput(output)}
 	}
 }
 
@@ -372,7 +373,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case previewOutputMsg:
-		if m.preview != nil {
+		if m.preview != nil && m.preview.FullName == msg.FullName {
 			m.preview.Output = msg.Output
 		}
 		return m, nil

@@ -234,6 +234,15 @@ func SendKeys(fullName, text string) error {
 	return cmd.Run()
 }
 
+// SendEnter sends just the Enter key to a session.
+func SendEnter(fullName string) {
+	tmuxBin, err := FindTmux()
+	if err != nil {
+		return
+	}
+	exec.Command(tmuxBin, "send-keys", "-t", fullName, "Enter").Run() //nolint:errcheck
+}
+
 // filterTMUX removes the TMUX env var so we can attach from within tmux.
 func filterTMUX(env []string) []string {
 	filtered := make([]string, 0, len(env))

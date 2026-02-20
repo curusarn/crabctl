@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/simon/crabctl/internal/session"
+	"github.com/simon/crabctl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -56,7 +57,7 @@ var newCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "Warning: %v (session created but message not sent)\n", err)
 				return nil
 			}
-			if err := exec.SendKeys(fullName, message); err != nil {
+			if err := sendMessage(exec, fullName, message); err != nil {
 				return fmt.Errorf("failed to send message: %w", err)
 			}
 			fmt.Printf("Sent: %s\n", message)
@@ -70,10 +71,13 @@ var newCmd = &cobra.Command{
 	},
 }
 
-// waitForPrompt polls the pane until Claude shows the ❯ prompt.
-func waitForPrompt(exec interface {
+type promptDetector interface {
 	CapturePaneOutput(string, int) (string, error)
-}, fullName string) error {
+	SendKeys(string, string) error
+}
+
+// waitForPrompt polls the pane until Claude shows the ❯ prompt.
+func waitForPrompt(exec promptDetector, fullName string) error {
 	timeout := 30 * time.Second
 	poll := 500 * time.Millisecond
 	deadline := time.Now().Add(timeout)
@@ -90,6 +94,30 @@ func waitForPrompt(exec interface {
 		}
 	}
 	return fmt.Errorf("timed out waiting for Claude prompt (%v)", timeout)
+}
+
+// sendMessage sends a message and verifies Claude started processing it.
+// Retries the Enter key if Claude is still waiting after sending.
+func sendMessage(exec promptDetector, fullName, message string) error {
+	if err := exec.SendKeys(fullName, message); err != nil {
+		return err
+	}
+
+	// Verify Claude started processing (transitioned away from Waiting)
+	for i := 0; i < 3; i++ {
+		time.Sleep(500 * time.Millisecond)
+		output, err := exec.CapturePaneOutput(fullName, 10)
+		if err != nil {
+			continue
+		}
+		status := session.DetectStatus(output)
+		if status != session.Waiting {
+			return nil // Claude is processing
+		}
+		// Still waiting — the Enter key might have been lost, resend just Enter
+		tmux.SendEnter(fullName)
+	}
+	return nil // sent text, best effort
 }
 
 func init() {
