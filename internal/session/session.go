@@ -218,7 +218,9 @@ func detectStatus(lines []string) Status {
 		}
 		contentLines++
 
-		// Once we've seen the prompt, only scan for TASK DONE!
+		// Once we've seen the prompt, only scan for TASK DONE! (with space)
+		// Note: the autoforward prompt contains TASK_DONE! (underscore) to
+		// avoid false positives from the sent message visible in the pane.
 		if sawPrompt {
 			if strings.Contains(trimmed, "TASK DONE!") {
 				return TaskDone

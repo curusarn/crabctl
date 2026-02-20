@@ -24,7 +24,7 @@ const spinnerInterval = 100 * time.Millisecond
 const autoForwardDelay = 10 * time.Second
 const maxAutoForwards = 5
 // AutoForwardMessage is the message sent to sessions with autoforward enabled.
-const AutoForwardMessage = `Continue working until done. Say "TASK DONE!" (swap _ for space) if you really think you're done.`
+const AutoForwardMessage = `Continue working until done. Say "TASK_DONE!" (swap _ for space) if you really think you're done.`
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
