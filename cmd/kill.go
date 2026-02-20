@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/simon/crabctl/internal/session"
+	"github.com/simon/crabctl/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -33,8 +35,20 @@ var killCmd = &cobra.Command{
 			}
 		}
 
+		// Capture session info before killing
+		workDir := exec.GetPanePath(fullName)
+		uuid, firstMsg := session.FindLatestSessionUUID(workDir)
+
 		if err := exec.KillSession(fullName); err != nil {
 			return fmt.Errorf("failed to kill session: %w", err)
+		}
+
+		// Record killed session in DB
+		if uuid != "" {
+			if store, err := state.Open(); err == nil {
+				store.MarkKilled(fullName, uuid, workDir, firstMsg)
+				store.Close()
+			}
 		}
 
 		fmt.Printf("Killed session %q\n", args[0])

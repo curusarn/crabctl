@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/simon/crabctl/internal/config"
+	"github.com/simon/crabctl/internal/state"
 	"github.com/simon/crabctl/internal/tmux"
 	"github.com/simon/crabctl/internal/tui"
 )
@@ -44,8 +45,16 @@ var rootCmd = &cobra.Command{
 		executors := buildExecutors()
 		var restore *tui.RestoreState
 
+		store, err := state.Open()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not open state db: %v\n", err)
+		}
+		if store != nil {
+			defer store.Close()
+		}
+
 		for {
-			m := tui.NewModel(executors, restore)
+			m := tui.NewModel(executors, restore, store)
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 			finalModel, err := p.Run()

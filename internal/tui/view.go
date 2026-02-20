@@ -154,12 +154,16 @@ func (m Model) View() string {
 			if host == "" && showHost {
 				host = "local"
 			}
+			mode := s.Mode
+			if m.autoForward[s.FullName] {
+				mode = "autoforward"
+			}
 			rows = append(rows, rowData{
 				host:    host,
 				name:    name,
 				dir:     shortenPath(s.WorkDir, 20),
 				status:  renderStatusWithAge(s),
-				mode:    renderMode(s.Mode),
+				mode:    renderMode(mode),
 				info:    renderInfo(s),
 				changes: renderChanges(s),
 			})
@@ -174,7 +178,7 @@ func (m Model) View() string {
 			{min: 4, max: 32, header: "NAME"},
 			{min: 4, max: 20, header: "DIR"},
 			{min: 7, max: 14, header: "STATUS"},
-			{min: 4, max: 8, header: "MODE"},
+			{min: 4, max: 12, header: "MODE"},
 			{min: 4, max: 40, header: "INFO"},
 		}
 		hostCol := colSpec{min: 4, max: 10, header: "HOST"}
@@ -344,7 +348,11 @@ func (m Model) View() string {
 	b.WriteString("\n")
 
 	// Help bar / kill confirmation (same slot to avoid layout shift)
-	if m.confirmKill != nil {
+	if m.confirmKill != nil && m.confirmKill.Killing {
+		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+		spinner := string(spinnerChars[m.spinnerFrame%len(spinnerChars)])
+		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("%s Killing '%s'...", spinner, m.confirmKill.SessionName)))
+	} else if m.confirmKill != nil {
 		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("Kill '%s'?", m.confirmKill.SessionName)))
 		b.WriteString("  ")
 		b.WriteString(confirmKeyStyle.Render("Enter"))
@@ -355,13 +363,13 @@ func (m Model) View() string {
 	} else if m.resumeMode {
 		b.WriteString(helpStyle.Render("enter resume  type to filter  j/k navigate  esc back"))
 	} else if m.preview != nil {
-		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+k kill"))
+		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+a autoforward  ctrl+k kill"))
 	} else if strings.HasPrefix(m.input.Value(), "/new") {
 		b.WriteString(helpStyle.Render("/new <name> [dir]  —  create a new session"))
 	} else if strings.HasPrefix(m.input.Value(), "/resume") {
 		b.WriteString(helpStyle.Render("/resume  —  browse and resume past Claude sessions"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  /new  /resume  j/k navigate  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  /new  /resume  j/k navigate  ctrl+a autoforward  ctrl+k kill  q quit"))
 	}
 	b.WriteString("\n")
 
@@ -369,7 +377,7 @@ func (m Model) View() string {
 }
 
 func (m Model) renderResumeList(b *strings.Builder) {
-	b.WriteString(headerStyle.Render("  Resume a past Claude session"))
+	b.WriteString(headerStyle.Render("  Resume a killed session"))
 	b.WriteString("\n\n")
 
 	if len(m.resumeFiltered) == 0 {
@@ -433,6 +441,10 @@ func renderStatusWithAge(s session.Session) string {
 		return label
 	case session.Permission:
 		return statusPermission.Render("permission")
+	case session.Confirm:
+		return statusPermission.Render("confirm")
+	case session.TaskDone:
+		return statusPermission.Render("task done")
 	default:
 		return statusUnknown.Render("unknown")
 	}
@@ -441,6 +453,9 @@ func renderStatusWithAge(s session.Session) string {
 func renderMode(mode string) string {
 	if mode == "" {
 		return statusUnknown.Render("-")
+	}
+	if mode == "autoforward" {
+		return statusPermission.Render("autoforward")
 	}
 	return modeStyle.Render(mode)
 }

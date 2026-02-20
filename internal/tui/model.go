@@ -12,15 +12,23 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/simon/crabctl/internal/session"
+	"github.com/simon/crabctl/internal/state"
 	"github.com/simon/crabctl/internal/tmux"
 )
 
 const pollInterval = 1500 * time.Millisecond
+const remotePollInterval = 5 * time.Second
+const maxRemotePollInterval = 60 * time.Second
 const spinnerInterval = 100 * time.Millisecond
+const autoForwardDelay = 10 * time.Second
+const maxAutoForwards = 5
+// AutoForwardMessage is the message sent to sessions with autoforward enabled.
+const AutoForwardMessage = `Continue working until done. Say "TASK DONE!" (swap _ for space) if you really think you're done.`
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 type tickMsg time.Time
+type remoteTickMsg time.Time
 type spinnerTickMsg time.Time
 
 type sessionCreatedMsg struct {
@@ -28,11 +36,19 @@ type sessionCreatedMsg struct {
 	Err  error
 }
 
+type sessionKilledMsg struct {
+	Name string
+}
+
 // remoteSessionsMsg carries sessions from a single remote host.
 // These get merged into the existing session list.
 type remoteSessionsMsg struct {
 	Host     string
 	Sessions []session.Session
+}
+
+type autoForwardSentMsg struct {
+	FullName string
 }
 
 type claudeSessionsMsg []session.ClaudeSession
@@ -52,12 +68,14 @@ type confirmAction struct {
 	SessionName string
 	FullName    string
 	Host        string
+	WorkDir     string
+	Killing     bool // true while kill is in progress
 }
 
 // RestoreState carries state between TUI restarts (after detaching from a session).
 type RestoreState struct {
-	FocusSession string             // name of session to re-focus
-	Sessions     []session.Session  // cached sessions to avoid blank screen
+	FocusSession string            // name of session to re-focus
+	Sessions     []session.Session // cached sessions to avoid blank screen
 }
 
 type Model struct {
@@ -69,17 +87,24 @@ type Model struct {
 	preview       *previewState
 	confirmKill   *confirmAction
 	executors     []tmux.Executor
-	remoteLoading map[string]bool // hosts still being fetched
-	spinnerFrame  int
+	remoteLoading  map[string]bool // hosts still being fetched (initial load)
+	remoteFetching bool           // true while a remote refresh is in-flight
+	spinnerFrame   int
 	restore       *RestoreState
+	store            *state.Store         // persistent state (nil-safe)
+	// Auto-forward: automatically send "continue" when session waits
+	autoForward      map[string]bool      // fullName -> enabled
+	autoForwardCount map[string]int       // fullName -> consecutive forwards sent
+	waitingSince     map[string]time.Time // fullName -> when first seen waiting
 	// Resume mode: browse past Claude sessions to resume
 	resumeMode     bool
 	resumeSessions []session.ClaudeSession
 	resumeFiltered []session.ClaudeSession
 	resumeCursor   int
-	width, height  int
-	AttachTarget   string // set when user confirms attach
-	AttachHost     string // host of session to attach
+	lastInteraction time.Time // last key/mouse event for remote backoff
+	width, height   int
+	AttachTarget    string // set when user confirms attach
+	AttachHost      string // host of session to attach
 	quitting       bool
 	err            error
 }
@@ -98,7 +123,7 @@ func (m Model) GetRestoreState() *RestoreState {
 	}
 }
 
-func NewModel(executors []tmux.Executor, restore *RestoreState) Model {
+func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Store) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type to filter or enter command..."
 	ti.Prompt = ""
@@ -114,9 +139,21 @@ func NewModel(executors []tmux.Executor, restore *RestoreState) Model {
 	}
 
 	m := Model{
-		input:         ti,
-		executors:     executors,
-		remoteLoading: loading,
+		input:            ti,
+		executors:        executors,
+		remoteLoading:    loading,
+		store:            store,
+		autoForward:      make(map[string]bool),
+		autoForwardCount: make(map[string]int),
+		waitingSince:     make(map[string]time.Time),
+		lastInteraction:  time.Now(),
+	}
+
+	// Load autoforward state from DB
+	if store != nil {
+		if af, err := store.LoadAllAutoForward(); err == nil {
+			m.autoForward = af
+		}
 	}
 
 	// Restore cached sessions and focus from previous TUI instance
@@ -149,6 +186,26 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+func remoteTickCmd(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
+		return remoteTickMsg(t)
+	})
+}
+
+// remoteInterval returns the remote poll interval based on inactivity.
+// Doubles every 30s of inactivity, starting at 5s, capped at 60s.
+func (m Model) remoteInterval() time.Duration {
+	idle := time.Since(m.lastInteraction)
+	interval := remotePollInterval
+	for threshold := 30 * time.Second; interval < maxRemotePollInterval && idle >= threshold; threshold += 30 * time.Second {
+		interval *= 2
+	}
+	if interval > maxRemotePollInterval {
+		interval = maxRemotePollInterval
+	}
+	return interval
+}
+
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		textinput.Blink,
@@ -157,8 +214,11 @@ func (m Model) Init() tea.Cmd {
 	}
 	if len(m.remoteLoading) > 0 {
 		cmds = append(cmds, spinnerTickCmd())
+		cmds = append(cmds, m.refreshRemoteSessions()...)
 	}
-	cmds = append(cmds, m.refreshRemoteSessions()...)
+	if m.hasRemoteHosts() {
+		cmds = append(cmds, remoteTickCmd(remotePollInterval))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -225,6 +285,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyResumeFilter()
 		return m, nil
 
+	case sessionKilledMsg:
+		m.confirmKill = nil
+		m.preview = nil
+		cmds := []tea.Cmd{m.refreshLocalSessions}
+		cmds = append(cmds, m.refreshRemoteSessions()...)
+		return m, tea.Batch(cmds...)
+
 	case sessionCreatedMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
@@ -238,8 +305,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		remote := filterByHost(m.sessions, true)
 		m.sessions = append(msg, remote...)
 		session.SortSessions(m.sessions)
-		if m.preview == nil {
-			m.applyFilter()
+		prevFocus := m.focusedSessionName()
+		m.applyFilter()
+		if prevFocus != "" {
+			m.focusSession(prevFocus)
 		}
 		// Restore focus on first refresh after restart
 		if m.restore != nil {
@@ -249,8 +318,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case remoteSessionsMsg:
-		// Clear loading state for this host
+		// Clear loading/fetching state for this host
 		delete(m.remoteLoading, msg.Host)
+		m.remoteFetching = false
 		// Replace sessions for this specific host, keep everything else
 		var kept []session.Session
 		for _, s := range m.sessions {
@@ -260,8 +330,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessions = append(kept, msg.Sessions...)
 		session.SortSessions(m.sessions)
-		if m.preview == nil {
-			m.applyFilter()
+		prevFocus := m.focusedSessionName()
+		m.applyFilter()
+		if prevFocus != "" {
+			m.focusSession(prevFocus)
 		}
 		return m, nil
 
@@ -271,16 +343,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinnerTickMsg:
 		m.spinnerFrame++
-		if len(m.remoteLoading) > 0 {
+		needsSpinner := len(m.remoteLoading) > 0 || (m.confirmKill != nil && m.confirmKill.Killing)
+		if needsSpinner {
 			return m, spinnerTickCmd()
 		}
 		return m, nil
 
+	case autoForwardSentMsg:
+		m.autoForwardCount[msg.FullName]++
+		return m, nil
+
 	case tickMsg:
+		m.syncAutoForwardFromDB()
 		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
-		cmds = append(cmds, m.refreshRemoteSessions()...)
 		if m.preview != nil {
 			cmds = append(cmds, m.capturePreviewCmd(m.preview.FullName, m.preview.Host))
+		}
+		cmds = append(cmds, m.checkAutoForward()...)
+		return m, tea.Batch(cmds...)
+
+	case remoteTickMsg:
+		cmds := []tea.Cmd{remoteTickCmd(m.remoteInterval())}
+		if !m.remoteFetching && m.hasRemoteHosts() {
+			m.remoteFetching = true
+			cmds = append(cmds, m.refreshRemoteSessions()...)
 		}
 		return m, tea.Batch(cmds...)
 
@@ -297,10 +383,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		return m.handleMouse(msg)
+		wasIdle := m.remoteInterval() > remotePollInterval
+		m.lastInteraction = time.Now()
+		ret, cmd := m.handleMouse(msg)
+		if wasIdle && m.hasRemoteHosts() && !m.remoteFetching {
+			m.remoteFetching = true
+			cmds := append(m.refreshRemoteSessions(), cmd)
+			return ret, tea.Batch(cmds...)
+		}
+		return ret, cmd
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		wasIdle := m.remoteInterval() > remotePollInterval
+		m.lastInteraction = time.Now()
+		ret, cmd := m.handleKey(msg)
+		if wasIdle && m.hasRemoteHosts() && !m.remoteFetching {
+			m.remoteFetching = true
+			cmds := append(m.refreshRemoteSessions(), cmd)
+			return ret, tea.Batch(cmds...)
+		}
+		return ret, cmd
 	}
 
 	var cmd tea.Cmd
@@ -355,7 +457,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				SessionName: sel.Name,
 				FullName:    sel.FullName,
 				Host:        sel.Host,
+				WorkDir:     sel.WorkDir,
 			}
+		}
+		return m, nil
+	}
+
+	// Ctrl+A: toggle autoforward on selected session
+	if key.Matches(msg, keys.AutoForward) && !m.resumeMode {
+		if sel := m.selectedSession(); sel != nil {
+			m.ToggleAutoForward(sel.FullName)
 		}
 		return m, nil
 	}
@@ -409,10 +520,27 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// /resume command: browse past Claude sessions
+		// /resume command: browse killed sessions from DB
 		if text == "/resume" || strings.HasPrefix(text, "/resume ") {
+			store := m.store
 			return m, func() tea.Msg {
-				return claudeSessionsMsg(session.ListRecentClaudeSessions(100))
+				if store == nil {
+					return claudeSessionsMsg(nil)
+				}
+				killed, err := store.ListKilled(100)
+				if err != nil {
+					return claudeSessionsMsg(nil)
+				}
+				sessions := make([]session.ClaudeSession, len(killed))
+				for i, ks := range killed {
+					sessions[i] = session.ClaudeSession{
+						UUID:         ks.SessionUUID,
+						ProjectDir:   ks.WorkDir,
+						ModTime:      ks.KilledAt,
+						FirstMessage: ks.FirstMsg,
+					}
+				}
+				return claudeSessionsMsg(sessions)
 			}
 		}
 
@@ -536,11 +664,148 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 	if m.confirmKill == nil {
 		return m, nil
 	}
-	exec := m.findExecutor(m.confirmKill.Host)
-	_ = exec.KillSession(m.confirmKill.FullName)
-	m.confirmKill = nil
-	m.preview = nil
-	return m, m.refreshLocalSessions
+	m.confirmKill.Killing = true
+	fullName := m.confirmKill.FullName
+	host := m.confirmKill.Host
+	name := m.confirmKill.SessionName
+	workDir := m.confirmKill.WorkDir
+	exec := m.findExecutor(host)
+	store := m.store
+	killCmd := func() tea.Msg {
+		// Capture Claude session UUID before killing
+		uuid, firstMsg := session.FindLatestSessionUUID(workDir)
+		_ = exec.KillSession(fullName)
+		// Record killed session in DB
+		if store != nil && uuid != "" {
+			store.MarkKilled(fullName, uuid, workDir, firstMsg)
+		}
+		return sessionKilledMsg{Name: name}
+	}
+	return m, tea.Batch(killCmd, spinnerTickCmd())
+}
+
+// checkAutoForward checks all sessions with autoforward enabled and sends
+// the continue message if they've been waiting for longer than autoForwardDelay.
+func (m *Model) checkAutoForward() []tea.Cmd {
+	now := time.Now()
+	var cmds []tea.Cmd
+
+	// Update waitingSince tracking for all sessions
+	activeFullNames := make(map[string]bool)
+	for _, s := range m.sessions {
+		activeFullNames[s.FullName] = true
+
+		if !m.autoForward[s.FullName] {
+			continue
+		}
+
+		isWaiting := s.Status == session.Waiting
+		if isWaiting {
+			if _, ok := m.waitingSince[s.FullName]; !ok {
+				m.waitingSince[s.FullName] = now
+			}
+		} else {
+			// Not waiting — reset timer
+			delete(m.waitingSince, s.FullName)
+			// Reset forward count when session starts running again
+			if s.Status == session.Running {
+				m.autoForwardCount[s.FullName] = 0
+			}
+		}
+
+		// Don't auto-forward task-done sessions
+		if s.Status == session.TaskDone {
+			continue
+		}
+
+		// Check if we should forward
+		since, ok := m.waitingSince[s.FullName]
+		if !ok || now.Sub(since) < autoForwardDelay {
+			continue
+		}
+		if m.autoForwardCount[s.FullName] >= maxAutoForwards {
+			continue
+		}
+
+		// Send the continue message
+		fullName := s.FullName
+		host := s.Host
+		exec := m.findExecutor(host)
+		cmds = append(cmds, func() tea.Msg {
+			_ = exec.SendKeys(fullName, AutoForwardMessage)
+			return autoForwardSentMsg{FullName: fullName}
+		})
+		// Reset timer so we wait another 10s
+		m.waitingSince[s.FullName] = now
+	}
+
+	// Clean up tracking for sessions that no longer exist
+	for fn := range m.waitingSince {
+		if !activeFullNames[fn] {
+			delete(m.waitingSince, fn)
+			delete(m.autoForwardCount, fn)
+		}
+	}
+
+	return cmds
+}
+
+// ToggleAutoForward toggles autoforward for the given session.
+func (m *Model) ToggleAutoForward(fullName string) {
+	if m.autoForward[fullName] {
+		delete(m.autoForward, fullName)
+		delete(m.waitingSince, fullName)
+		delete(m.autoForwardCount, fullName)
+		if m.store != nil {
+			_ = m.store.SetAutoForward(fullName, false)
+		}
+	} else {
+		m.autoForward[fullName] = true
+		if m.store != nil {
+			_ = m.store.SetAutoForward(fullName, true)
+		}
+	}
+}
+
+// SetAutoForward enables or disables autoforward for a session by name.
+func (m *Model) SetAutoForward(fullName string, enabled bool) {
+	if enabled {
+		m.autoForward[fullName] = true
+	} else {
+		delete(m.autoForward, fullName)
+		delete(m.waitingSince, fullName)
+		delete(m.autoForwardCount, fullName)
+	}
+	if m.store != nil {
+		_ = m.store.SetAutoForward(fullName, enabled)
+	}
+}
+
+// syncAutoForwardFromDB merges DB state into the in-memory autoforward map.
+// Newly enabled sessions are added, newly disabled sessions are removed.
+// Runtime counters (autoForwardCount, waitingSince) are preserved for unchanged sessions.
+func (m *Model) syncAutoForwardFromDB() {
+	if m.store == nil {
+		return
+	}
+	dbState, err := m.store.LoadAllAutoForward()
+	if err != nil {
+		return
+	}
+
+	// Add newly enabled sessions from DB
+	for name := range dbState {
+		m.autoForward[name] = true
+	}
+
+	// Remove sessions disabled in DB
+	for name := range m.autoForward {
+		if !dbState[name] {
+			delete(m.autoForward, name)
+			delete(m.waitingSince, name)
+			delete(m.autoForwardCount, name)
+		}
+	}
 }
 
 func (m *Model) applyFilter() {
@@ -561,6 +826,14 @@ func (m *Model) applyFilter() {
 		m.cursor = max(0, len(m.filtered)-1)
 	}
 	m.ensureCursorVisible()
+}
+
+// focusedSessionName returns the FullName of the currently focused session.
+func (m Model) focusedSessionName() string {
+	if m.cursor >= 0 && m.cursor < len(m.filtered) {
+		return m.filtered[m.cursor].FullName
+	}
+	return ""
 }
 
 // focusSession moves the cursor to the session with the given fullName.

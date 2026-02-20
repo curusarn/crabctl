@@ -12,18 +12,29 @@ Quick status check and control of all running crab-* tmux sessions.
 
 ### 1. List all crab sessions
 
+**Local sessions:**
 ```bash
 tmux list-sessions -F '#{session_name}|#{session_attached}' 2>/dev/null | grep '^crab-' || echo "NO_SESSIONS"
 ```
 
-If no sessions found, report that and stop.
+**Remote sessions (when `WORKBENCH_HOST` is set):**
+```bash
+ssh $WORKBENCH_HOST "tmux list-sessions -F '#{session_name}|#{session_attached}' 2>/dev/null"
+```
+Remote sessions use a different prefix (typically `$USER-` or `$WORKBENCH_TMUX_PREFIX-`). Include all remote sessions in the listing.
+
+If no local or remote sessions found, report that and stop.
 
 ### 2. Capture output from each session
 
-For each crab session, capture the last 30 lines:
-
+**Local sessions:**
 ```bash
 tmux capture-pane -t SESSION_NAME -p -S -30
+```
+
+**Remote sessions:**
+```bash
+ssh $WORKBENCH_HOST "tmux capture-pane -t SESSION_NAME -p -S -30"
 ```
 
 ### 3. Analyze and summarize
@@ -39,10 +50,13 @@ For each session, determine its state by reading the captured output:
 Present a concise table:
 
 ```
-Session          Status      What it's doing
-crab-debugger    running     Writing .github/workflows/release.yml
-crab-project-a   idle        Finished fixing goreleaser config
+Session              Status      What it's doing
+crab-debugger        running     Writing .github/workflows/release.yml
+crab-project-a       idle        Finished fixing goreleaser config
+simon-calm-elk (R)   running     Cleaning up workbench CLI output
 ```
+
+Mark remote sessions with `(R)` or `(remote)` in the table.
 
 Include the last meaningful action (most recent `⏺` line) for context.
 
@@ -72,6 +86,18 @@ tmux send-keys -t SESSION_NAME Enter
 - The Enter MUST be sent as a separate Bash tool call — NOT chained with `&&` or `;` or newlines in the same command. This is because tmux needs time to process the pasted text before receiving Enter.
 - After sending, wait 3-5 seconds then capture the pane to verify the message was submitted (look for spinner or response starting)
 - If the session still shows the prompt with your text but no spinner, send Enter again
+
+**Remote sessions (send via SSH):**
+
+First call:
+```bash
+ssh $WORKBENCH_HOST "tmux send-keys -t SESSION_NAME -l 'the message text here'"
+```
+
+Second call:
+```bash
+ssh $WORKBENCH_HOST "tmux send-keys -t SESSION_NAME Enter"
+```
 
 When composing instructions for a crab:
 - Provide full context (what other sessions have done, current repo state)
@@ -142,3 +168,4 @@ new /crab session: do X        # Create new session with a task
 - Multiple crabs may work on the same repo — coordinate pushes to avoid conflicts
 - Ghost/suggestion text in captures is stripped by crabctl but raw tmux captures may still show it
 - Use `crabctl send NAME 'message'` CLI as an alternative to tmux send-keys
+- Use `crabctl kill -f NAME` to kill a session without confirmation prompt

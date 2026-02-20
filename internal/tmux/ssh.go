@@ -68,16 +68,19 @@ func (s *SSHExecutor) NewSession(name, workDir string, claudeArgs []string) erro
 	if workDir != "" {
 		cmd += fmt.Sprintf(" -c %s", shellQuote(workDir))
 	}
-	claudeCmd := "unset CLAUDECODE; claude"
-	for _, a := range claudeArgs {
-		claudeCmd += " " + a
-	}
-	cmd += " " + shellQuote(claudeCmd)
 
 	_, err := s.run(cmd)
 	if err != nil {
 		return err
 	}
+
+	// Send claude command via send-keys to avoid quoting issues through SSH
+	claudeCmd := "unset CLAUDECODE; claude"
+	for _, a := range claudeArgs {
+		claudeCmd += " " + a
+	}
+	s.run(fmt.Sprintf("tmux send-keys -t %s -l %s", shellQuote(fullName), shellQuote(claudeCmd)))
+	s.run(fmt.Sprintf("tmux send-keys -t %s Enter", shellQuote(fullName)))
 
 	// Store claude flags
 	if len(claudeArgs) > 0 {

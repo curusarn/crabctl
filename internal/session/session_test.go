@@ -100,6 +100,20 @@ func TestDetectStatus(t *testing.T) {
 			expect: Running,
 		},
 		{
+			name: "spinner with token count and thinking",
+			input: `⏺ Read(main.go)
+
+✶ Transfiguring… (56s · ↓ 1.1k tokens · thinking)`,
+			expect: Running,
+		},
+		{
+			name: "spinner variant ✻ with same status line",
+			input: `⏺ Read(main.go)
+
+✻ Transfiguring… (53s · ↓ 1.1k tokens · thinking)`,
+			expect: Running,
+		},
+		{
 			name: "completed spinner does NOT trigger running",
 			input: `✻ Brewed for 39s
 
@@ -130,7 +144,7 @@ func TestDetectStatus(t *testing.T) {
    4. Type here to tell Claude what to change
 
  ctrl-g to edit in Nvim · ~/.claude/plans/foo.md`,
-			expect: Waiting,
+			expect: Confirm,
 		},
 		{
 			name: "empty output",
@@ -148,6 +162,33 @@ func TestDetectStatus(t *testing.T) {
 			input: `⏺ Loading...
 
 ⠹ Working`,
+			expect: Running,
+		},
+		{
+			name: "task done marker with prompt",
+			input: `⏺ Done.
+
+TASK DONE!
+
+❯
+───────────────────
+  ? for shortcuts`,
+			expect: TaskDone,
+		},
+		{
+			name: "task done marker in agent output with prompt",
+			input: `I've completed all the requested changes. TASK DONE!
+
+❯
+───────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: TaskDone,
+		},
+		{
+			name: "task done not triggered when still running",
+			input: `TASK DONE! said earlier
+
+✻ Pondering…`,
 			expect: Running,
 		},
 		{
@@ -201,9 +242,9 @@ func TestDetectMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := detectMode(lines(tt.input))
-			if got != tt.expect {
-				t.Errorf("detectMode() = %q, want %q", got, tt.expect)
+			got := parseStatusBar(lines(tt.input))
+			if got.Mode != tt.expect {
+				t.Errorf("parseStatusBar().Mode = %q, want %q", got.Mode, tt.expect)
 			}
 		})
 	}

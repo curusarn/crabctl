@@ -177,6 +177,50 @@ func extractContent(raw json.RawMessage) string {
 	return ""
 }
 
+// FindLatestSessionUUID returns the UUID of the most recently modified .jsonl
+// session file for the given workDir, along with its first user message.
+func FindLatestSessionUUID(workDir string) (uuid string, firstMsg string) {
+	if workDir == "" {
+		return "", ""
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", ""
+	}
+
+	encoded := encodeProjectDir(workDir)
+	projectDir := filepath.Join(home, ".claude", "projects", encoded)
+
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return "", ""
+	}
+
+	var latestTime time.Time
+	var latestUUID string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latestUUID = strings.TrimSuffix(e.Name(), ".jsonl")
+		}
+	}
+
+	if latestUUID == "" {
+		return "", ""
+	}
+
+	meta := readSessionMeta(filepath.Join(projectDir, latestUUID+".jsonl"))
+	return latestUUID, meta.FirstMessage
+}
+
 // encodeProjectDir encodes a directory path the same way Claude Code does
 // for its project session storage: slashes become hyphens, leading slash
 // is included (so /Users/foo becomes -Users-foo).

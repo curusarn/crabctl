@@ -3,13 +3,14 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up      key.Binding
-	Down    key.Binding
-	Enter   key.Binding
-	Kill    key.Binding
-	Escape  key.Binding
-	Quit    key.Binding
-	CtrlC   key.Binding
+	Up          key.Binding
+	Down        key.Binding
+	Enter       key.Binding
+	Kill        key.Binding
+	AutoForward key.Binding
+	Escape      key.Binding
+	Quit        key.Binding
+	CtrlC       key.Binding
 }
 
 var keys = keyMap{
@@ -24,6 +25,9 @@ var keys = keyMap{
 	),
 	Kill: key.NewBinding(
 		key.WithKeys("ctrl+k"),
+	),
+	AutoForward: key.NewBinding(
+		key.WithKeys("ctrl+a"),
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
