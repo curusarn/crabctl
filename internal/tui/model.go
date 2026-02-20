@@ -730,11 +730,19 @@ func (m *Model) checkAutoForward() []tea.Cmd {
 			continue
 		}
 
-		// Send the continue message
+		// Send the continue message (re-check status first to avoid race)
 		fullName := s.FullName
 		host := s.Host
 		exec := m.findExecutor(host)
 		cmds = append(cmds, func() tea.Msg {
+			// Re-capture pane to verify still waiting (not TaskDone)
+			output, err := exec.CapturePaneOutput(fullName, 25)
+			if err == nil {
+				status := session.DetectStatus(output)
+				if status != session.Waiting {
+					return nil
+				}
+			}
 			_ = exec.SendKeys(fullName, AutoForwardMessage)
 			return autoForwardSentMsg{FullName: fullName}
 		})
