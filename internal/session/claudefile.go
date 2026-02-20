@@ -84,13 +84,14 @@ func ListRecentClaudeSessions(limit int) []ClaudeSession {
 	return all
 }
 
-// sessionMeta holds the cwd and first message extracted from a JSONL file.
+// sessionMeta holds the cwd, first message, and start time extracted from a JSONL file.
 type sessionMeta struct {
 	CWD          string
 	FirstMessage string
+	Started      time.Time // timestamp of the first user message
 }
 
-// readSessionMeta reads the cwd and first user message from a JSONL session file.
+// readSessionMeta reads the cwd, first user message, and start time from a JSONL session file.
 func readSessionMeta(path string) sessionMeta {
 	f, err := os.Open(path)
 	if err != nil {
@@ -104,9 +105,10 @@ func readSessionMeta(path string) sessionMeta {
 	var meta sessionMeta
 	for scanner.Scan() {
 		var msg struct {
-			Type    string `json:"type"`
-			CWD     string `json:"cwd"`
-			Message struct {
+			Type      string `json:"type"`
+			CWD       string `json:"cwd"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
@@ -119,6 +121,10 @@ func readSessionMeta(path string) sessionMeta {
 
 		if meta.CWD == "" && msg.CWD != "" {
 			meta.CWD = msg.CWD
+		}
+
+		if meta.Started.IsZero() && msg.Timestamp != "" {
+			meta.Started, _ = time.Parse(time.RFC3339Nano, msg.Timestamp)
 		}
 
 		if meta.FirstMessage != "" {
@@ -141,8 +147,8 @@ func readSessionMeta(path string) sessionMeta {
 		}
 		meta.FirstMessage = content
 
-		// Got both, stop reading
-		if meta.CWD != "" {
+		// Got all three, stop reading
+		if meta.CWD != "" && !meta.Started.IsZero() {
 			break
 		}
 	}
@@ -177,9 +183,12 @@ func extractContent(raw json.RawMessage) string {
 	return ""
 }
 
-// FindLatestSessionUUID returns the UUID of the most recently modified .jsonl
-// session file for the given workDir, along with its first user message.
-func FindLatestSessionUUID(workDir string) (uuid string, firstMsg string) {
+// FindSessionUUID finds the Claude session file for a given workDir that was
+// created closest to (and shortly after) sessionStart. This correctly identifies
+// which session file belongs to a specific tmux session, even when multiple
+// Claude sessions share the same workdir.
+// Falls back to most recently modified file if no timestamp match is found.
+func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, firstMsg string) {
 	if workDir == "" {
 		return "", ""
 	}
@@ -197,8 +206,14 @@ func FindLatestSessionUUID(workDir string) (uuid string, firstMsg string) {
 		return "", ""
 	}
 
-	var latestTime time.Time
-	var latestUUID string
+	type candidate struct {
+		uuid     string
+		firstMsg string
+		started  time.Time
+		modTime  time.Time
+	}
+
+	var candidates []candidate
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
 			continue
@@ -207,18 +222,52 @@ func FindLatestSessionUUID(workDir string) (uuid string, firstMsg string) {
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(latestTime) {
-			latestTime = info.ModTime()
-			latestUUID = strings.TrimSuffix(e.Name(), ".jsonl")
-		}
+		u := strings.TrimSuffix(e.Name(), ".jsonl")
+		meta := readSessionMeta(filepath.Join(projectDir, u+".jsonl"))
+		candidates = append(candidates, candidate{
+			uuid:     u,
+			firstMsg: meta.FirstMessage,
+			started:  meta.Started,
+			modTime:  info.ModTime(),
+		})
 	}
 
-	if latestUUID == "" {
+	if len(candidates) == 0 {
 		return "", ""
 	}
 
-	meta := readSessionMeta(filepath.Join(projectDir, latestUUID+".jsonl"))
-	return latestUUID, meta.FirstMessage
+	// Find the session whose first message timestamp is closest to sessionStart
+	// (must be within 2 minutes after sessionStart)
+	if !sessionStart.IsZero() {
+		var bestMatch *candidate
+		bestDiff := 2 * time.Minute
+		for i := range candidates {
+			c := &candidates[i]
+			if c.started.IsZero() {
+				continue
+			}
+			diff := c.started.Sub(sessionStart)
+			if diff >= 0 && diff < bestDiff {
+				bestDiff = diff
+				bestMatch = c
+			}
+		}
+		if bestMatch != nil {
+			return bestMatch.uuid, bestMatch.firstMsg
+		}
+	}
+
+	// Fallback: most recently modified file
+	var best *candidate
+	for i := range candidates {
+		if best == nil || candidates[i].modTime.After(best.modTime) {
+			best = &candidates[i]
+		}
+	}
+	if best != nil {
+		return best.uuid, best.firstMsg
+	}
+	return "", ""
 }
 
 // encodeProjectDir encodes a directory path the same way Claude Code does

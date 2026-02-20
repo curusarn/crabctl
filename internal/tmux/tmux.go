@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -282,4 +283,23 @@ func GetPanePath(fullName string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// GetSessionCreated returns the creation time of a tmux session.
+func GetSessionCreated(fullName string) time.Time {
+	tmuxBin, err := FindTmux()
+	if err != nil {
+		return time.Time{}
+	}
+
+	cmd := exec.Command(tmuxBin, "display-message", "-t", fullName, "-p", "#{session_created}")
+	out, err := cmd.Output()
+	if err != nil {
+		return time.Time{}
+	}
+	epoch, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(epoch, 0)
 }

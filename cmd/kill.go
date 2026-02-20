@@ -8,6 +8,7 @@ import (
 
 	"github.com/simon/crabctl/internal/session"
 	"github.com/simon/crabctl/internal/state"
+	"github.com/simon/crabctl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,8 @@ var killCmd = &cobra.Command{
 
 		// Capture session info before killing
 		workDir := exec.GetPanePath(fullName)
-		uuid, firstMsg := session.FindLatestSessionUUID(workDir)
+		created := tmux.GetSessionCreated(fullName)
+		uuid, firstMsg := session.FindSessionUUID(workDir, created)
 
 		if err := exec.KillSession(fullName); err != nil {
 			return fmt.Errorf("failed to kill session: %w", err)

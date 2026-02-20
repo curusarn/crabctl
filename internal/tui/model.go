@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -673,7 +674,8 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 	store := m.store
 	killCmd := func() tea.Msg {
 		// Capture Claude session UUID before killing
-		uuid, firstMsg := session.FindLatestSessionUUID(workDir)
+		created := tmux.GetSessionCreated(fullName)
+		uuid, firstMsg := session.FindSessionUUID(workDir, created)
 		_ = exec.KillSession(fullName)
 		// Record killed session in DB
 		if store != nil && uuid != "" {
@@ -937,6 +939,10 @@ func parseNewCommand(text string) tea.Cmd {
 		workDir := dir
 		if workDir == "" {
 			workDir, _ = os.Getwd()
+		} else if strings.HasPrefix(workDir, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				workDir = filepath.Join(home, workDir[2:])
+			}
 		}
 
 		fullName := tmux.SessionPrefix + name
