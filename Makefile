@@ -4,9 +4,9 @@ LDFLAGS := -s -w \
 	-X main.version=$(VERSION) \
 	-X main.commit=$(COMMIT)
 
-.PHONY: build clean test lint install build-all build-linux build-darwin release snapshot
+.PHONY: build clean test lint install symlink-skill build-all build-linux build-darwin release snapshot
 
-build:
+build: symlink-skill
 	go build -ldflags "$(LDFLAGS)" -o bin/crabctl .
 
 clean:
@@ -20,6 +20,11 @@ lint:
 
 install: build
 	cp bin/crabctl $(GOPATH)/bin/
+
+symlink-skill:
+	@mkdir -p ~/.claude/skills/crab
+	@ln -sf $(CURDIR)/.claude/skills/crab/SKILL.md ~/.claude/skills/crab/SKILL.md
+	@echo "Symlinked ~/.claude/skills/crab/SKILL.md -> $(CURDIR)/.claude/skills/crab/SKILL.md"
 
 build-all: build-linux build-darwin
 

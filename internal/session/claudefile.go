@@ -271,6 +271,96 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 	return "", ""
 }
 
+// ReadSessionPreview reads a JSONL session file and returns a formatted
+// conversation preview showing the last maxMessages user/assistant messages.
+func ReadSessionPreview(workDir, uuid string, maxMessages int) string {
+	if uuid == "" {
+		return ""
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	encoded := encodeProjectDir(workDir)
+	path := filepath.Join(home, ".claude", "projects", encoded, uuid+".jsonl")
+
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	type chatLine struct {
+		role    string // "You" or "Claude"
+		content string
+	}
+	var lines []chatLine
+
+	for scanner.Scan() {
+		var msg struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue
+		}
+
+		var role string
+		switch msg.Type {
+		case "user":
+			role = "You"
+		case "assistant":
+			role = "Claude"
+		default:
+			continue
+		}
+
+		content := extractContent(msg.Message.Content)
+		if content == "" {
+			continue
+		}
+
+		// Skip skill/command invocations
+		if strings.HasPrefix(content, "<command-message>") {
+			continue
+		}
+
+		// Collapse whitespace
+		content = strings.Join(strings.Fields(content), " ")
+
+		// Truncate long messages
+		if len(content) > 200 {
+			content = content[:197] + "..."
+		}
+
+		lines = append(lines, chatLine{role: role, content: content})
+	}
+
+	// Keep last maxMessages
+	if len(lines) > maxMessages {
+		lines = lines[len(lines)-maxMessages:]
+	}
+
+	var b strings.Builder
+	for i, l := range lines {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(l.role)
+		b.WriteString(": ")
+		b.WriteString(l.content)
+	}
+	return b.String()
+}
+
 // encodeProjectDir encodes a directory path the same way Claude Code does
 // for its project session storage: slashes become hyphens, leading slash
 // is included (so /Users/foo becomes -Users-foo).

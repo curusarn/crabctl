@@ -124,7 +124,7 @@ func (m Model) View() string {
 	b.WriteString("\n\n")
 
 	if m.resumeMode {
-		m.renderResumeList(&b)
+		m.renderResumeList(&b, m.preview != nil)
 	} else if len(m.sessions) == 0 && m.err == nil {
 		b.WriteString("  No sessions. Run: crabctl new <name>\n\n")
 	} else if m.err != nil {
@@ -290,7 +290,44 @@ func (m Model) View() string {
 	}
 
 	// Preview panel (height-limited to keep session list visible)
-	if m.preview != nil {
+	if m.resumeMode && m.preview != nil {
+		borderTitle := fmt.Sprintf(" ─── %s ", m.preview.SessionName)
+		titleWidth := lipgloss.Width(borderTitle)
+		remaining := m.width - titleWidth - 2
+		if remaining > 0 {
+			borderTitle += strings.Repeat("─", remaining)
+		}
+		b.WriteString(previewBorderStyle.Render(" " + borderTitle))
+		b.WriteString("\n")
+
+		if m.preview.Output != "" {
+			previewLines := strings.Split(m.preview.Output, "\n")
+
+			// Budget for resume mode: title+blank(2) + header(1) + "Resume..."(1) + gap(1) + visible rows + borders(2) + input(1) + help(1) + safety(1)
+			maxVis := m.maxVisibleResumeSessions()
+			overhead := 10 + maxVis
+			maxPreview := m.height - overhead
+			if maxPreview < 3 {
+				maxPreview = 3
+			}
+
+			start := len(previewLines) - maxPreview
+			if start < 0 {
+				start = 0
+			}
+			for _, line := range previewLines[start:] {
+				b.WriteString(previewContentStyle.Render(" " + line))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(previewContentStyle.Render(" Loading..."))
+			b.WriteString("\n")
+		}
+
+		borderBottom := strings.Repeat("─", max(0, m.width-2))
+		b.WriteString(previewBorderStyle.Render(" " + borderBottom))
+		b.WriteString("\n")
+	} else if m.preview != nil {
 		borderTitle := fmt.Sprintf(" ─── %s ", m.preview.SessionName)
 		titleWidth := lipgloss.Width(borderTitle)
 		remaining := m.width - titleWidth - 2
@@ -339,7 +376,9 @@ func (m Model) View() string {
 	}
 
 	// Input line (placeholder changes based on mode)
-	if m.preview != nil {
+	if m.resumeMode && m.preview != nil {
+		m.input.Placeholder = "Press enter to resume this session..."
+	} else if m.preview != nil {
 		m.input.Placeholder = "Type and press enter to send a message to the session..."
 	} else {
 		m.input.Placeholder = "Type to filter or enter command..."
@@ -361,8 +400,10 @@ func (m Model) View() string {
 		b.WriteString("  ")
 		b.WriteString(confirmKeyStyle.Render("Esc"))
 		b.WriteString(confirmDimStyle.Render("cancel"))
+	} else if m.resumeMode && m.preview != nil {
+		b.WriteString(helpStyle.Render("enter resume  j/k navigate  esc close preview"))
 	} else if m.resumeMode {
-		b.WriteString(helpStyle.Render("enter resume  type to filter  j/k navigate  esc back"))
+		b.WriteString(helpStyle.Render("enter preview  type to filter  j/k navigate  esc back"))
 	} else if m.preview != nil {
 		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+a autoforward  ctrl+k kill"))
 	} else if strings.HasPrefix(m.input.Value(), "/new") {
@@ -377,7 +418,7 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func (m Model) renderResumeList(b *strings.Builder) {
+func (m Model) renderResumeList(b *strings.Builder, showPreview bool) {
 	b.WriteString(headerStyle.Render("  Resume a killed session"))
 	b.WriteString("\n\n")
 
@@ -390,14 +431,7 @@ func (m Model) renderResumeList(b *strings.Builder) {
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
-	// Show up to 20 visible sessions
-	maxVis := 20
-	if m.height > 0 {
-		maxVis = m.height - 10
-		if maxVis < 5 {
-			maxVis = 5
-		}
-	}
+	maxVis := m.maxVisibleResumeSessions()
 	start := 0
 	if m.resumeCursor >= maxVis {
 		start = m.resumeCursor - maxVis + 1
@@ -432,6 +466,29 @@ func (m Model) renderResumeList(b *strings.Builder) {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+}
+
+// maxVisibleResumeSessions returns the max rows to show in the resume list.
+// When preview is open, limit to fewer rows to leave room for the preview panel.
+func (m Model) maxVisibleResumeSessions() int {
+	if m.preview != nil {
+		maxVis := m.height / 10
+		if maxVis < 5 {
+			maxVis = 5
+		}
+		if maxVis > len(m.resumeFiltered) {
+			maxVis = len(m.resumeFiltered)
+		}
+		return maxVis
+	}
+	maxVis := 20
+	if m.height > 0 {
+		maxVis = m.height - 10
+		if maxVis < 5 {
+			maxVis = 5
+		}
+	}
+	return maxVis
 }
 
 func renderStatusWithAge(s session.Session) string {

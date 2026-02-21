@@ -373,7 +373,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.syncAutoForwardFromDB()
 		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
-		if m.preview != nil {
+		if m.preview != nil && !m.resumeMode {
 			cmds = append(cmds, m.capturePreviewCmd(m.preview.FullName, m.preview.Host))
 		}
 		cmds = append(cmds, m.checkAutoForward()...)
@@ -441,6 +441,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.resumeMode {
+			if m.preview != nil {
+				m.preview = nil
+				return m, nil
+			}
 			m.resumeMode = false
 			m.input.SetValue("")
 			m.applyFilter()
@@ -639,12 +643,7 @@ func (m Model) switchPreview() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// Ignore all mouse events in preview mode
-	if m.preview != nil {
-		return m, nil
-	}
-
-	// Resume mode: scroll wheel navigates claude sessions
+	// Resume mode: scroll wheel navigates claude sessions (with or without preview)
 	if m.resumeMode {
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
@@ -656,6 +655,14 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.resumeCursor++
 			}
 		}
+		if m.preview != nil {
+			return m.switchResumePreview()
+		}
+		return m, nil
+	}
+
+	// Ignore all mouse events in preview mode
+	if m.preview != nil {
 		return m, nil
 	}
 
@@ -982,46 +989,74 @@ func parseNewCommand(text string) tea.Cmd {
 }
 
 func (m Model) handleResumeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Navigation: j/k only when input is empty (arrow keys always work)
+	// Navigation
+	navigateUp := func() {
+		if m.resumeCursor > 0 {
+			m.resumeCursor--
+		}
+	}
+	navigateDown := func() {
+		if m.resumeCursor < len(m.resumeFiltered)-1 {
+			m.resumeCursor++
+		}
+	}
+
 	if m.input.Value() == "" {
 		if key.Matches(msg, keys.Up) {
-			if m.resumeCursor > 0 {
-				m.resumeCursor--
+			navigateUp()
+			if m.preview != nil {
+				return m.switchResumePreview()
 			}
 			return m, nil
 		}
 		if key.Matches(msg, keys.Down) {
-			if m.resumeCursor < len(m.resumeFiltered)-1 {
-				m.resumeCursor++
+			navigateDown()
+			if m.preview != nil {
+				return m.switchResumePreview()
 			}
 			return m, nil
 		}
 	} else {
 		// Arrow keys still navigate when filtering
 		if msg.Type == tea.KeyUp {
-			if m.resumeCursor > 0 {
-				m.resumeCursor--
+			navigateUp()
+			if m.preview != nil {
+				return m.switchResumePreview()
 			}
 			return m, nil
 		}
 		if msg.Type == tea.KeyDown {
-			if m.resumeCursor < len(m.resumeFiltered)-1 {
-				m.resumeCursor++
+			navigateDown()
+			if m.preview != nil {
+				return m.switchResumePreview()
 			}
 			return m, nil
 		}
 	}
 
-	// Enter: resume selected session
+	// Enter: two-stage — first opens preview, second resumes
 	if key.Matches(msg, keys.Enter) {
 		sel := m.selectedClaudeSession()
 		if sel == nil {
 			return m, nil
 		}
+
+		// Stage 1: open preview
+		if m.preview == nil {
+			cs := *sel
+			m.preview = &previewState{
+				SessionName: strings.TrimPrefix(cs.Name, tmux.SessionPrefix),
+				FullName:    cs.UUID,
+			}
+			return m, m.resumePreviewCmd(cs)
+		}
+
+		// Stage 2: resume session
 		cs := *sel
 		name := strings.TrimPrefix(cs.Name, tmux.SessionPrefix)
 		fullName := tmux.SessionPrefix + name
 		m.pendingFocus = fullName
+		m.preview = nil
 		return m, func() tea.Msg {
 			if tmux.HasSession(fullName) {
 				return sessionCreatedMsg{Name: name, Err: fmt.Errorf("session %q already exists", name)}
@@ -1037,6 +1072,30 @@ func (m Model) handleResumeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	m.applyResumeFilter()
 	return m, cmd
+}
+
+func (m Model) resumePreviewCmd(cs session.ClaudeSession) tea.Cmd {
+	workDir := cs.ProjectDir
+	uuid := cs.UUID
+	return func() tea.Msg {
+		output := session.ReadSessionPreview(workDir, uuid, 30)
+		if output == "" {
+			output = "(no conversation found)"
+		}
+		return previewOutputMsg{FullName: uuid, Output: output}
+	}
+}
+
+func (m Model) switchResumePreview() (tea.Model, tea.Cmd) {
+	sel := m.selectedClaudeSession()
+	if sel == nil {
+		return m, nil
+	}
+	cs := *sel
+	m.preview.SessionName = strings.TrimPrefix(cs.Name, tmux.SessionPrefix)
+	m.preview.FullName = cs.UUID
+	m.preview.Output = ""
+	return m, m.resumePreviewCmd(cs)
 }
 
 func (m *Model) applyResumeFilter() {
