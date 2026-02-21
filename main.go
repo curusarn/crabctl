@@ -1,6 +1,13 @@
 package main
 
-import "github.com/simon/crabctl/cmd"
+import (
+	_ "embed"
+
+	"github.com/simon/crabctl/cmd"
+)
+
+//go:embed .claude/skills/crab/SKILL.md
+var skillContent []byte
 
 var (
 	version = "dev"
@@ -9,5 +16,6 @@ var (
 
 func main() {
 	cmd.SetVersionInfo(version, commit)
+	cmd.SetSkillContent(skillContent)
 	cmd.Execute()
 }
