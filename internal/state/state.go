@@ -61,6 +61,7 @@ func Open() (*Store, error) {
 	for _, m := range []string{
 		"ALTER TABLE sessions ADD COLUMN work_dir TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN first_msg TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sessions ADD COLUMN killed_at TIMESTAMP",
 	} {
 		db.Exec(m) //nolint:errcheck
 	}
@@ -111,13 +112,14 @@ func (s *Store) LoadAllAutoForward() (map[string]bool, error) {
 // MarkKilled records a session as killed with its Claude session UUID, workdir, and first message.
 func (s *Store) MarkKilled(name, sessionUUID, workDir, firstMsg string) error {
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (name, killed, session_file, work_dir, first_msg, updated_at)
-		VALUES (?, 1, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO sessions (name, killed, session_file, work_dir, first_msg, killed_at, updated_at)
+		VALUES (?, 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT(name) DO UPDATE SET
 			killed = 1,
 			session_file = excluded.session_file,
 			work_dir = excluded.work_dir,
 			first_msg = excluded.first_msg,
+			killed_at = CURRENT_TIMESTAMP,
 			updated_at = CURRENT_TIMESTAMP
 	`, name, sessionUUID, workDir, firstMsg)
 	return err
@@ -135,10 +137,11 @@ type KilledSession struct {
 // ListKilled returns killed sessions ordered by most recently killed first.
 func (s *Store) ListKilled(limit int) ([]KilledSession, error) {
 	rows, err := s.db.Query(`
-		SELECT name, session_file, work_dir, first_msg, updated_at
+		SELECT name, session_file, work_dir, first_msg,
+			COALESCE(killed_at, updated_at) AS killed_time
 		FROM sessions
 		WHERE killed = 1 AND session_file != ''
-		ORDER BY updated_at DESC
+		ORDER BY killed_time DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -149,11 +152,11 @@ func (s *Store) ListKilled(limit int) ([]KilledSession, error) {
 	var result []KilledSession
 	for rows.Next() {
 		var ks KilledSession
-		var updatedAt string
-		if err := rows.Scan(&ks.Name, &ks.SessionUUID, &ks.WorkDir, &ks.FirstMsg, &updatedAt); err != nil {
+		var killedAt string
+		if err := rows.Scan(&ks.Name, &ks.SessionUUID, &ks.WorkDir, &ks.FirstMsg, &killedAt); err != nil {
 			return nil, err
 		}
-		ks.KilledAt, _ = time.Parse("2006-01-02 15:04:05", updatedAt)
+		ks.KilledAt, _ = time.Parse("2006-01-02 15:04:05", killedAt)
 		result = append(result, ks)
 	}
 	return result, rows.Err()

@@ -99,6 +99,7 @@ type Model struct {
 	autoForwardCount map[string]int       // fullName -> consecutive forwards sent
 	waitingSince     map[string]time.Time // fullName -> when first seen waiting
 	// Resume mode: browse past Claude sessions to resume
+	pendingFocus   string // full session name to focus+preview after resume
 	resumeMode     bool
 	resumeSessions []session.ClaudeSession
 	resumeFiltered []session.ClaudeSession
@@ -297,6 +298,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionCreatedMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
+			m.pendingFocus = ""
 		}
 		m.input.SetValue("")
 		m.resumeMode = false
@@ -316,6 +318,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.restore != nil {
 			m.focusSession(m.restore.FocusSession)
 			m.restore = nil
+		}
+		// Auto-focus + preview after resume
+		if m.pendingFocus != "" {
+			m.focusSession(m.pendingFocus)
+			if sel := m.selectedSession(); sel != nil && sel.FullName == m.pendingFocus {
+				m.preview = &previewState{
+					SessionName: sel.Name,
+					FullName:    sel.FullName,
+					Host:        sel.Host,
+				}
+				m.pendingFocus = ""
+				return m, m.capturePreviewCmd(sel.FullName, sel.Host)
+			}
 		}
 		return m, nil
 
@@ -1004,9 +1019,10 @@ func (m Model) handleResumeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		cs := *sel
+		name := strings.TrimPrefix(cs.Name, tmux.SessionPrefix)
+		fullName := tmux.SessionPrefix + name
+		m.pendingFocus = fullName
 		return m, func() tea.Msg {
-			name := "r-" + cs.UUID[:8]
-			fullName := tmux.SessionPrefix + name
 			if tmux.HasSession(fullName) {
 				return sessionCreatedMsg{Name: name, Err: fmt.Errorf("session %q already exists", name)}
 			}

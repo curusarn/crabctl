@@ -386,7 +386,7 @@ func (m Model) renderResumeList(b *strings.Builder) {
 		return
 	}
 
-	header := fmt.Sprintf("    %-8s %-16s %-24s %s", "AGE", "NAME", "PROJECT", "MESSAGE")
+	header := fmt.Sprintf("    %-8s %-16s %-24s %s", "KILLED", "NAME", "PROJECT", "MESSAGE")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
