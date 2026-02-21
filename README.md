@@ -7,14 +7,14 @@ Manage Claude Code sessions in tmux.
 ## Install
 
 ```bash
-git clone git@github.com:curusarn/crabctl.git ~/git/crabctl
-cd ~/git/crabctl && make
+git clone git@github.com:curusarn/crabctl.git
+cd crabctl && make
 ```
 
 Add to your `~/.zshrc`:
 
 ```bash
-export PATH="$HOME/git/crabctl/bin:$PATH"
+export PATH="$PWD/bin:$PATH"
 ```
 
 Then restart your shell or run `source ~/.zshrc`.
