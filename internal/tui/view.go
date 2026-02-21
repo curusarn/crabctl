@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/simon/crabctl/internal/session"
+	"github.com/simon/crabctl/internal/tmux"
 )
 
 var (
@@ -385,7 +386,7 @@ func (m Model) renderResumeList(b *strings.Builder) {
 		return
 	}
 
-	header := fmt.Sprintf("    %-8s %-30s %s", "AGE", "PROJECT", "MESSAGE")
+	header := fmt.Sprintf("    %-8s %-16s %-24s %s", "AGE", "NAME", "PROJECT", "MESSAGE")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -409,13 +410,17 @@ func (m Model) renderResumeList(b *strings.Builder) {
 	for i := start; i < end; i++ {
 		cs := m.resumeFiltered[i]
 		age := session.FormatDuration(time.Since(cs.ModTime))
-		project := shortenPath(cs.ProjectDir, 30)
+		name := strings.TrimPrefix(cs.Name, tmux.SessionPrefix)
+		if len(name) > 16 {
+			name = name[:13] + "..."
+		}
+		project := shortenPath(cs.ProjectDir, 24)
 		msg := cs.FirstMessage
-		if len(msg) > 50 {
-			msg = msg[:47] + "..."
+		if len(msg) > 40 {
+			msg = msg[:37] + "..."
 		}
 
-		row := " " + pad(age, 8) + " " + pad(project, 30) + " " + actionStyle.Render(msg)
+		row := " " + pad(age, 8) + " " + pad(name, 16) + " " + pad(project, 24) + " " + actionStyle.Render(msg)
 
 		if i == m.resumeCursor {
 			b.WriteString(cursorStyle.Render(" >"))

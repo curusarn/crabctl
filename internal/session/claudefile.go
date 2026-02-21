@@ -12,6 +12,7 @@ import (
 
 // ClaudeSession represents a past Claude Code conversation that can be resumed.
 type ClaudeSession struct {
+	Name         string // crab session name (e.g. "crab-foo"), empty for non-crab sessions
 	UUID         string
 	ProjectDir   string // working directory from session, or decoded from dir name
 	ModTime      time.Time

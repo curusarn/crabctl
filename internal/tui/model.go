@@ -536,6 +536,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				sessions := make([]session.ClaudeSession, len(killed))
 				for i, ks := range killed {
 					sessions[i] = session.ClaudeSession{
+						Name:         ks.Name,
 						UUID:         ks.SessionUUID,
 						ProjectDir:   ks.WorkDir,
 						ModTime:      ks.KilledAt,
@@ -1030,7 +1031,8 @@ func (m *Model) applyResumeFilter() {
 		lower := strings.ToLower(query)
 		m.resumeFiltered = nil
 		for _, cs := range m.resumeSessions {
-			if strings.Contains(strings.ToLower(cs.ProjectDir), lower) ||
+			if strings.Contains(strings.ToLower(cs.Name), lower) ||
+				strings.Contains(strings.ToLower(cs.ProjectDir), lower) ||
 				strings.Contains(strings.ToLower(cs.FirstMessage), lower) {
 				m.resumeFiltered = append(m.resumeFiltered, cs)
 			}
