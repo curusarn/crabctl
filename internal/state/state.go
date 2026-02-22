@@ -28,19 +28,31 @@ type Store struct {
 	db *sql.DB
 }
 
-// Open creates or opens the state database at ~/.config/crabctl/state.db.
+// Open creates or opens the state database at ~/.local/state/crabctl/state.db.
+// Migrates from the old location (~/.config/crabctl/state.db) if present.
 func Open() (*Store, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
 
-	dir := filepath.Join(home, ".config", "crabctl")
+	dir := filepath.Join(home, ".local", "state", "crabctl")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 
 	dbPath := filepath.Join(dir, "state.db")
+
+	// Migrate from old location
+	oldPath := filepath.Join(home, ".config", "crabctl", "state.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		if _, err := os.Stat(oldPath); err == nil {
+			_ = os.Rename(oldPath, dbPath)
+			// Also move WAL/SHM files if present
+			_ = os.Rename(oldPath+"-wal", dbPath+"-wal")
+			_ = os.Rename(oldPath+"-shm", dbPath+"-shm")
+		}
+	}
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
