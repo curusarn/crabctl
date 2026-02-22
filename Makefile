@@ -4,9 +4,13 @@ LDFLAGS := -s -w \
 	-X main.version=$(VERSION) \
 	-X main.commit=$(COMMIT)
 
-.PHONY: build clean test lint install symlink-skill build-all build-linux build-darwin release snapshot
+.PHONY: build clean test lint install install-gopath symlink-skill build-all build-linux build-darwin release snapshot
 
-build: symlink-skill
+install: build symlink-skill
+	@echo
+	@echo "-> Add ${PWD}/bin to your PATH"
+
+build:
 	go build -ldflags "$(LDFLAGS)" -o bin/crabctl .
 
 clean:
@@ -18,7 +22,7 @@ test:
 lint:
 	golangci-lint run
 
-install: build
+install-gopath: build
 	cp bin/crabctl $(GOPATH)/bin/
 
 symlink-skill:

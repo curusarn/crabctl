@@ -83,7 +83,6 @@ func List() ([]Session, error) {
 			PRURL:         resolvePRURL(bar.PR, workDir),
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
-			LastActive:    findLatestSessionFile(workDir),
 			AttachedCount: info.AttachedCount,
 			WorkDir:       workDir,
 			PaneContent:   output,
@@ -108,10 +107,8 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 		status, bar, lastAction := analyzeOutput(output)
 		workDir := ex.GetPanePath(info.FullName)
 
-		var lastActive time.Time
 		var prURL string
 		if host == "" {
-			lastActive = findLatestSessionFile(workDir)
 			prURL = resolvePRURL(bar.PR, workDir)
 		}
 
@@ -127,7 +124,6 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 			PRURL:         prURL,
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
-			LastActive:    lastActive,
 			AttachedCount: info.AttachedCount,
 			WorkDir:       workDir,
 			PaneContent:   output,

@@ -55,7 +55,7 @@ var rootCmd = &cobra.Command{
 
 		for {
 			m := tui.NewModel(executors, restore, store)
-			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+			p := tea.NewProgram(m, tea.WithAltScreen())
 
 			finalModel, err := p.Run()
 			if err != nil {

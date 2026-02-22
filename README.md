@@ -14,7 +14,7 @@ cd crabctl && make
 Add to your `~/.zshrc`:
 
 ```bash
-export PATH="$PWD/bin:$PATH"
+echo 'export PATH="'"$PWD"'/bin:$PATH"' >> ~/.zshrc
 ```
 
 Then restart your shell or run `source ~/.zshrc`.

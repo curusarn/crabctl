@@ -730,6 +730,12 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 				}
 			}
 		}
+
+		// Compute LastActive from the known session file (single stat call)
+		if s.SessionUUID != "" && s.Host == "" {
+			s.LastActive = session.SessionFileModTime(s.WorkDir, s.SessionUUID)
+		}
+
 		s.PaneContent = "" // no longer needed after UUID resolution
 	}
 }
