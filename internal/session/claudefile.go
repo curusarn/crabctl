@@ -17,6 +17,7 @@ type ClaudeSession struct {
 	ProjectDir   string // working directory from session, or decoded from dir name
 	ModTime      time.Time
 	FirstMessage string // first user message, truncated
+	Killed       bool   // true if explicitly killed via crabctl (false = lost/crashed)
 	encodedDir   string // internal: encoded dir name for file lookup
 }
 

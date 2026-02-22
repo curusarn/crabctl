@@ -567,6 +567,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						ProjectDir:   ps.WorkDir,
 						ModTime:      ps.LastSeen,
 						FirstMessage: ps.FirstMsg,
+						Killed:       ps.Killed,
 					})
 				}
 				return claudeSessionsMsg(sessions)

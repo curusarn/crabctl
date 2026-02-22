@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/simon/crabctl/internal/session"
 	"github.com/simon/crabctl/internal/tmux"
@@ -419,7 +420,7 @@ func (m Model) View() string {
 }
 
 func (m Model) renderResumeList(b *strings.Builder, showPreview bool) {
-	b.WriteString(headerStyle.Render("  Resume a killed session"))
+	b.WriteString(headerStyle.Render("  Resume a session"))
 	b.WriteString("\n\n")
 
 	if len(m.resumeFiltered) == 0 {
@@ -427,7 +428,7 @@ func (m Model) renderResumeList(b *strings.Builder, showPreview bool) {
 		return
 	}
 
-	header := fmt.Sprintf("    %-8s %-16s %-24s %s", "KILLED", "NAME", "PROJECT", "MESSAGE")
+	header := fmt.Sprintf("    %-8s %-16s %-24s %s", "AGO", "NAME", "PROJECT", "MESSAGE")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -444,6 +445,9 @@ func (m Model) renderResumeList(b *strings.Builder, showPreview bool) {
 	for i := start; i < end; i++ {
 		cs := m.resumeFiltered[i]
 		age := session.FormatDuration(time.Since(cs.ModTime))
+		if !cs.Killed {
+			age += " ~"
+		}
 		name := strings.TrimPrefix(cs.Name, tmux.SessionPrefix)
 		if len(name) > 16 {
 			name = name[:13] + "..."
@@ -549,7 +553,11 @@ func renderChanges(s session.Session) string {
 		parts = append(parts, actionStyle.Render(s.GitChanges))
 	}
 	if s.PR != "" {
-		parts = append(parts, modeStyle.Render(s.PR))
+		pr := modeStyle.Render(s.PR)
+		if s.PRURL != "" {
+			pr = ansi.SetHyperlink(s.PRURL) + pr + ansi.ResetHyperlink()
+		}
+		parts = append(parts, pr)
 	}
 
 	return strings.Join(parts, actionStyle.Render(" · "))

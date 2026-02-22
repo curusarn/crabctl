@@ -151,13 +151,14 @@ type PastSession struct {
 	WorkDir     string
 	FirstMsg    string
 	LastSeen    time.Time
+	Killed      bool // true if explicitly killed via crabctl
 }
 
 // ListResumable returns all sessions with a UUID, ordered by most recent first.
 // Includes both explicitly killed sessions and ones that disappeared (Ctrl+C, crash).
 func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 	rows, err := s.db.Query(`
-		SELECT name, session_file, work_dir, first_msg,
+		SELECT name, session_file, work_dir, first_msg, killed,
 			COALESCE(killed_at, updated_at) AS last_seen
 		FROM sessions
 		WHERE session_file != ''
@@ -173,9 +174,11 @@ func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 	for rows.Next() {
 		var ps PastSession
 		var lastSeen string
-		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &lastSeen); err != nil {
+		var killed int
+		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &killed, &lastSeen); err != nil {
 			return nil, err
 		}
+		ps.Killed = killed == 1
 		ps.LastSeen, _ = time.Parse("2006-01-02 15:04:05", lastSeen)
 		result = append(result, ps)
 	}
