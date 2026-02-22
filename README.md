@@ -11,10 +11,10 @@ git clone git@github.com:curusarn/crabctl.git
 cd crabctl && make
 ```
 
-Add to your `~/.zshrc`:
+Add crabctl/bin to your `~/.zshrc`:
 
 ```bash
-echo 'export PATH="'"$PWD"'/bin:$PATH"' >> ~/.zshrc
+echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc
 ```
 
 Then restart your shell or run `source ~/.zshrc`.

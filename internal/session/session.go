@@ -2,10 +2,9 @@ package session
 
 import (
 	"fmt"
-	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/simon/crabctl/internal/tmux"
@@ -59,6 +58,61 @@ type Session struct {
 	SessionFirstMsg string // first user message from matched session
 }
 
+// prCacheEntry holds a cached PR lookup result.
+type prCacheEntry struct {
+	PR, PRURL  string
+	ResolvedAt time.Time
+}
+
+var (
+	prCache   = make(map[string]prCacheEntry) // key: "host:fullName"
+	prCacheMu sync.Mutex
+)
+
+const prCacheTTL = 5 * time.Minute
+
+// ResolveBranchPR returns the PR text and URL for a session's branch via gh CLI.
+// Results are cached for 5 minutes to avoid running gh on every tick.
+func ResolveBranchPR(host, fullName, workDir string, ex tmux.Executor) (string, string) {
+	if workDir == "" {
+		return "", ""
+	}
+	key := host + ":" + fullName
+
+	prCacheMu.Lock()
+	if entry, ok := prCache[key]; ok && time.Since(entry.ResolvedAt) < prCacheTTL {
+		prCacheMu.Unlock()
+		return entry.PR, entry.PRURL
+	}
+	prCacheMu.Unlock()
+
+	pr, prURL := ex.GetBranchPR(workDir)
+
+	prCacheMu.Lock()
+	prCache[key] = prCacheEntry{PR: pr, PRURL: prURL, ResolvedAt: time.Now()}
+	prCacheMu.Unlock()
+
+	return pr, prURL
+}
+
+// WarmPRCache populates the PR cache from DB-stored PR URLs on startup.
+func WarmPRCache(entries map[string]string) {
+	prCacheMu.Lock()
+	defer prCacheMu.Unlock()
+	for fullName, prURL := range entries {
+		// Extract "PR #N" from URL (last path segment)
+		pr := ""
+		if idx := strings.LastIndex(prURL, "/"); idx >= 0 {
+			pr = "PR #" + prURL[idx+1:]
+		}
+		prCache[":"+fullName] = prCacheEntry{
+			PR:         pr,
+			PRURL:      prURL,
+			ResolvedAt: time.Now(),
+		}
+	}
+}
+
 // List returns all crab-* sessions with status detection.
 func List() ([]Session, error) {
 	infos, err := tmux.ListSessions()
@@ -66,11 +120,14 @@ func List() ([]Session, error) {
 		return nil, err
 	}
 
+	local := &tmux.LocalExecutor{}
 	sessions := make([]Session, 0, len(infos))
 	for _, info := range infos {
 		output, _ := tmux.CapturePaneOutput(info.FullName, 25)
 		status, bar, lastAction := analyzeOutput(output)
 		workDir := tmux.GetPanePath(info.FullName)
+
+		pr, prURL := ResolveBranchPR("", info.FullName, workDir, local)
 
 		sessions = append(sessions, Session{
 			Name:          info.Name,
@@ -79,8 +136,8 @@ func List() ([]Session, error) {
 			Mode:          bar.Mode,
 			LastAction:    lastAction,
 			GitChanges:    bar.GitChanges,
-			PR:            bar.PR,
-			PRURL:         resolvePRURL(bar.PR, workDir),
+			PR:            pr,
+			PRURL:         prURL,
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
 			AttachedCount: info.AttachedCount,
@@ -107,10 +164,7 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 		status, bar, lastAction := analyzeOutput(output)
 		workDir := ex.GetPanePath(info.FullName)
 
-		var prURL string
-		if host == "" {
-			prURL = resolvePRURL(bar.PR, workDir)
-		}
+		pr, prURL := ResolveBranchPR(host, info.FullName, workDir, ex)
 
 		sessions = append(sessions, Session{
 			Name:          info.Name,
@@ -120,7 +174,7 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 			Mode:          bar.Mode,
 			LastAction:    lastAction,
 			GitChanges:    bar.GitChanges,
-			PR:            bar.PR,
+			PR:            pr,
 			PRURL:         prURL,
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
@@ -433,64 +487,6 @@ func detectLastAction(lines []string) string {
 		}
 	}
 	return ""
-}
-
-// prNumberRe extracts the PR number from "PR #123".
-var prNumberRe = regexp.MustCompile(`#(\d+)`)
-
-// repoBaseURL caches workDir -> GitHub base URL (e.g. "https://github.com/owner/repo").
-// Empty string means "not a GitHub repo" (also cached to avoid repeated git calls).
-var repoBaseURL = make(map[string]string)
-
-// resolvePRURL turns "PR #123" + a working directory into a full GitHub PR URL.
-// Returns empty string if the repo isn't on GitHub or git fails.
-// Caches the git remote lookup per workDir to avoid repeated subprocess calls.
-func resolvePRURL(pr, workDir string) string {
-	if pr == "" || workDir == "" {
-		return ""
-	}
-	m := prNumberRe.FindStringSubmatch(pr)
-	if len(m) < 2 {
-		return ""
-	}
-	num := m[1]
-
-	base, cached := repoBaseURL[workDir]
-	if !cached {
-		base = resolveGitHubBase(workDir)
-		repoBaseURL[workDir] = base
-	}
-	if base == "" {
-		return ""
-	}
-	return base + "/pull/" + num
-}
-
-// resolveGitHubBase returns "https://github.com/owner/repo" for a workDir, or "".
-func resolveGitHubBase(workDir string) string {
-	out, err := exec.Command("git", "-C", workDir, "remote", "get-url", "origin").Output()
-	if err != nil {
-		return ""
-	}
-	remote := strings.TrimSpace(string(out))
-
-	// Parse GitHub owner/repo from SSH or HTTPS remote
-	// git@github.com:owner/repo.git
-	// https://github.com/owner/repo.git
-	if !strings.Contains(remote, "github.com") {
-		return ""
-	}
-	remote = strings.TrimSuffix(remote, ".git")
-	var ownerRepo string
-	if idx := strings.Index(remote, "github.com:"); idx >= 0 {
-		ownerRepo = remote[idx+len("github.com:"):]
-	} else if idx := strings.Index(remote, "github.com/"); idx >= 0 {
-		ownerRepo = remote[idx+len("github.com/"):]
-	}
-	if ownerRepo == "" {
-		return ""
-	}
-	return "https://github.com/" + ownerRepo
 }
 
 // FormatDurationCoarse formats a duration using only the largest unit.

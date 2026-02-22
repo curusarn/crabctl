@@ -2,6 +2,9 @@ package tmux
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,8 +44,70 @@ func (l *LocalExecutor) GetPanePath(fullName string) string {
 	return GetPanePath(fullName)
 }
 
+func (l *LocalExecutor) GetBranchPR(workDir string) (string, string) {
+	pr, prURL := getBranchPRLocal(workDir)
+	if pr != "" {
+		return pr, prURL
+	}
+	// If workDir is not a git repo, scan subdirs
+	for _, sub := range findGitSubdirs(workDir) {
+		pr, prURL = getBranchPRLocal(sub)
+		if pr != "" {
+			return pr, prURL
+		}
+	}
+	return "", ""
+}
+
+func getBranchPRLocal(dir string) (string, string) {
+	cmd := exec.Command("gh", "pr", "view", "--json", "number,url", "--jq", `"PR #\(.number) \(.url)"`)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", ""
+	}
+	return ParsePROutput(strings.TrimSpace(string(out)))
+}
+
+const maxGitSubdirs = 10
+
+// findGitSubdirs returns immediate subdirectories of dir that contain a .git directory.
+// Returns at most maxGitSubdirs results to avoid excessive scanning.
+func findGitSubdirs(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		sub := filepath.Join(dir, e.Name())
+		if _, err := os.Stat(filepath.Join(sub, ".git")); err == nil {
+			dirs = append(dirs, sub)
+			if len(dirs) >= maxGitSubdirs {
+				break
+			}
+		}
+	}
+	return dirs
+}
+
 func (l *LocalExecutor) AttachSession(fullName string) error {
 	return RunAttachSession(fullName)
+}
+
+// ParsePROutput parses "PR #123 https://github.com/owner/repo/pull/123" into (pr, prURL).
+func ParsePROutput(line string) (string, string) {
+	if !strings.HasPrefix(line, "PR #") {
+		return "", ""
+	}
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) != 3 {
+		return "", ""
+	}
+	return parts[0] + " " + parts[1], parts[2]
 }
 
 // listSessionsWithPrefix lists tmux sessions with the given prefix.

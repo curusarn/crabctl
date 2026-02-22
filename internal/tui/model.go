@@ -38,7 +38,9 @@ type sessionCreatedMsg struct {
 }
 
 type sessionKilledMsg struct {
-	Name string
+	Name     string
+	FullName string
+	Host     string
 }
 
 // remoteSessionsMsg carries sessions from a single remote host.
@@ -154,10 +156,13 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 		lastInteraction:  time.Now(),
 	}
 
-	// Load autoforward state from DB
+	// Load state from DB
 	if store != nil {
 		if af, err := store.LoadAllAutoForward(); err == nil {
 			m.autoForward = af
+		}
+		if prs, err := store.LoadAllPRs(); err == nil {
+			session.WarmPRCache(prs)
 		}
 	}
 
@@ -292,7 +297,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionKilledMsg:
 		m.confirmKill = nil
-		m.preview = nil
+		// Only clear preview if the killed session was the one being previewed
+		if m.preview != nil && m.preview.FullName == msg.FullName && m.preview.Host == msg.Host {
+			m.preview = nil
+		}
 		cmds := []tea.Cmd{m.refreshLocalSessions}
 		cmds = append(cmds, m.refreshRemoteSessions()...)
 		return m, tea.Batch(cmds...)
@@ -307,10 +315,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
+		m.err = nil
 		// Carry forward already-resolved session state (UUIDs, PR URLs)
 		m.mergeSessionState(msg)
 		// Local sessions replace only local entries, preserve remote
 		remote := filterByHost(m.sessions, true)
+		local := filterByHost(m.sessions, false)
+		// Don't replace a populated list with an empty one (transient tmux hiccup)
+		if len(msg) == 0 && len(local) > 0 {
+			return m, nil
+		}
 		m.sessions = append(msg, remote...)
 		session.SortSessions(m.sessions)
 		prevFocus := m.focusedSessionName()
@@ -344,10 +358,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.remoteFetching = false
 		// Replace sessions for this specific host, keep everything else
 		var kept []session.Session
+		var oldHostCount int
 		for _, s := range m.sessions {
 			if s.Host != msg.Host {
 				kept = append(kept, s)
+			} else {
+				oldHostCount++
 			}
+		}
+		// Don't replace a populated list with an empty one (transient hiccup)
+		if len(msg.Sessions) == 0 && oldHostCount > 0 {
+			return m, nil
 		}
 		m.sessions = append(kept, msg.Sessions...)
 		session.SortSessions(m.sessions)
@@ -676,7 +697,7 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 		if store != nil && uuid != "" {
 			store.MarkKilled(fullName, uuid, workDir, firstMsg)
 		}
-		return sessionKilledMsg{Name: name}
+		return sessionKilledMsg{Name: name, FullName: fullName, Host: host}
 	}
 	return m, tea.Batch(killCmd, spinnerTickCmd())
 }
@@ -714,6 +735,13 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 			// Carry forward PRURL if the PR number hasn't changed.
 			if old.PRURL != "" && old.PR == s.PR {
 				s.PRURL = old.PRURL
+			}
+		}
+
+		// Persist new PR URLs to DB
+		if s.PRURL != "" && m.store != nil {
+			if old, ok := known[s.FullName]; !ok || old.PRURL != s.PRURL {
+				m.store.SavePR(s.FullName, s.PRURL)
 			}
 		}
 

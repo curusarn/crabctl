@@ -116,6 +116,49 @@ func (s *SSHExecutor) GetPanePath(fullName string) string {
 	return strings.TrimSpace(out)
 }
 
+func (s *SSHExecutor) GetBranchPR(workDir string) (string, string) {
+	// Source .envrc from workDir for credentials (GH_TOKEN), then run gh in the target dir
+	envSetup := fmt.Sprintf("cd %s && [ -f .envrc ] && . .envrc >/dev/null 2>&1;", shellQuote(workDir))
+	ghCmd := "gh pr view --json number,url --jq '\"PR #\\(.number) \\(.url)\"'"
+
+	out, err := s.run(fmt.Sprintf("%s cd %s && %s", envSetup, shellQuote(workDir), ghCmd))
+	if err == nil {
+		if pr, prURL := ParsePROutput(strings.TrimSpace(out)); pr != "" {
+			return pr, prURL
+		}
+	}
+	// If workDir is not a git repo or has no PR, scan subdirs
+	for _, sub := range s.findGitSubdirs(workDir) {
+		out, err := s.run(fmt.Sprintf("%s cd %s && %s", envSetup, shellQuote(sub), ghCmd))
+		if err == nil {
+			if pr, prURL := ParsePROutput(strings.TrimSpace(out)); pr != "" {
+				return pr, prURL
+			}
+		}
+	}
+	return "", ""
+}
+
+// findGitSubdirs returns immediate subdirectories containing .git via a single SSH call.
+// Returns at most 10 results to avoid excessive scanning.
+func (s *SSHExecutor) findGitSubdirs(dir string) []string {
+	out, err := s.run(fmt.Sprintf("for d in %s/*/; do [ -e \"$d/.git\" ] && echo \"$d\"; done", shellQuote(dir)))
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			dirs = append(dirs, strings.TrimSuffix(line, "/"))
+			if len(dirs) >= 10 {
+				break
+			}
+		}
+	}
+	return dirs
+}
+
 func (s *SSHExecutor) AttachSession(fullName string) error {
 	args := []string{"-t"}
 	args = append(args, s.sshArgs()...)

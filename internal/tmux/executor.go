@@ -11,5 +11,6 @@ type Executor interface {
 	KillSession(fullName string) error
 	HasSession(fullName string) bool
 	GetPanePath(fullName string) string
+	GetBranchPR(workDir string) (pr string, prURL string)
 	AttachSession(fullName string) error
 }
