@@ -403,17 +403,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Width = msg.Width - 4
 		return m, nil
 
-	case tea.MouseMsg:
-		wasIdle := m.remoteInterval() > remotePollInterval
-		m.lastInteraction = time.Now()
-		ret, cmd := m.handleMouse(msg)
-		if wasIdle && m.hasRemoteHosts() && !m.remoteFetching {
-			m.remoteFetching = true
-			cmds := append(m.refreshRemoteSessions(), cmd)
-			return ret, tea.Batch(cmds...)
-		}
-		return ret, cmd
-
 	case tea.KeyMsg:
 		wasIdle := m.remoteInterval() > remotePollInterval
 		m.lastInteraction = time.Now()
@@ -547,26 +536,38 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// /resume command: browse killed sessions from DB
+		// /resume command: browse past sessions from DB
 		if text == "/resume" || strings.HasPrefix(text, "/resume ") {
 			store := m.store
+			executors := m.executors
 			return m, func() tea.Msg {
 				if store == nil {
 					return claudeSessionsMsg(nil)
 				}
-				killed, err := store.ListKilled(100)
+				past, err := store.ListResumable(100)
 				if err != nil {
 					return claudeSessionsMsg(nil)
 				}
-				sessions := make([]session.ClaudeSession, len(killed))
-				for i, ks := range killed {
-					sessions[i] = session.ClaudeSession{
-						Name:         ks.Name,
-						UUID:         ks.SessionUUID,
-						ProjectDir:   ks.WorkDir,
-						ModTime:      ks.KilledAt,
-						FirstMessage: ks.FirstMsg,
+				// Collect active session names to filter them out
+				active := make(map[string]bool)
+				for _, ex := range executors {
+					infos, _ := ex.ListSessions()
+					for _, info := range infos {
+						active[info.FullName] = true
 					}
+				}
+				var sessions []session.ClaudeSession
+				for _, ps := range past {
+					if active[ps.Name] {
+						continue
+					}
+					sessions = append(sessions, session.ClaudeSession{
+						Name:         ps.Name,
+						UUID:         ps.SessionUUID,
+						ProjectDir:   ps.WorkDir,
+						ModTime:      ps.LastSeen,
+						FirstMessage: ps.FirstMsg,
+					})
 				}
 				return claudeSessionsMsg(sessions)
 			}
@@ -648,49 +649,6 @@ func (m Model) switchPreview() (tea.Model, tea.Cmd) {
 	return m, m.capturePreviewCmd(sel.FullName, sel.Host)
 }
 
-func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// Resume mode: scroll wheel navigates claude sessions (with or without preview)
-	if m.resumeMode {
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			if m.resumeCursor > 0 {
-				m.resumeCursor--
-			}
-		case tea.MouseButtonWheelDown:
-			if m.resumeCursor < len(m.resumeFiltered)-1 {
-				m.resumeCursor++
-			}
-		}
-		if m.preview != nil {
-			return m.switchResumePreview()
-		}
-		return m, nil
-	}
-
-	// Ignore all mouse events in preview mode
-	if m.preview != nil {
-		return m, nil
-	}
-
-	// Normal mode: scroll wheel navigates sessions
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		if m.cursor > 0 {
-			m.cursor--
-			m.ensureCursorVisible()
-		}
-		return m, nil
-	case tea.MouseButtonWheelDown:
-		if m.cursor < len(m.filtered)-1 {
-			m.cursor++
-			m.ensureCursorVisible()
-		}
-		return m, nil
-	}
-
-	return m, nil
-}
-
 func (m Model) executeKill() (Model, tea.Cmd) {
 	if m.confirmKill == nil {
 		return m, nil
@@ -754,6 +712,10 @@ func (m *Model) mergeSessionUUIDs(sessions []session.Session) {
 			)
 			if s.SessionUUID != "" {
 				claimed[s.SessionUUID] = true
+				// Persist to DB so the UUID survives accidental kills
+				if m.store != nil {
+					m.store.SaveSessionUUID(s.FullName, s.SessionUUID, s.WorkDir, s.SessionFirstMsg)
+				}
 			}
 		}
 		s.PaneContent = "" // no longer needed after UUID resolution

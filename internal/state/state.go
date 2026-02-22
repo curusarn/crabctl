@@ -113,6 +113,21 @@ func (s *Store) LoadAllAutoForward() (map[string]bool, error) {
 	return result, rows.Err()
 }
 
+// SaveSessionUUID persists the Claude session UUID for an active session.
+// Called when a UUID is first resolved so it survives accidental kills.
+func (s *Store) SaveSessionUUID(name, sessionUUID, workDir, firstMsg string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (name, session_file, work_dir, first_msg, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(name) DO UPDATE SET
+			session_file = excluded.session_file,
+			work_dir = excluded.work_dir,
+			first_msg = excluded.first_msg,
+			updated_at = CURRENT_TIMESTAMP
+	`, name, sessionUUID, workDir, firstMsg)
+	return err
+}
+
 // MarkKilled records a session as killed with its Claude session UUID, workdir, and first message.
 func (s *Store) MarkKilled(name, sessionUUID, workDir, firstMsg string) error {
 	_, err := s.db.Exec(`
@@ -129,23 +144,24 @@ func (s *Store) MarkKilled(name, sessionUUID, workDir, firstMsg string) error {
 	return err
 }
 
-// KilledSession represents a killed session that can be resumed.
-type KilledSession struct {
+// PastSession represents a session that can be resumed.
+type PastSession struct {
 	Name        string
 	SessionUUID string
 	WorkDir     string
 	FirstMsg    string
-	KilledAt    time.Time
+	LastSeen    time.Time
 }
 
-// ListKilled returns killed sessions ordered by most recently killed first.
-func (s *Store) ListKilled(limit int) ([]KilledSession, error) {
+// ListResumable returns all sessions with a UUID, ordered by most recent first.
+// Includes both explicitly killed sessions and ones that disappeared (Ctrl+C, crash).
+func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 	rows, err := s.db.Query(`
 		SELECT name, session_file, work_dir, first_msg,
-			COALESCE(killed_at, updated_at) AS killed_time
+			COALESCE(killed_at, updated_at) AS last_seen
 		FROM sessions
-		WHERE killed = 1 AND session_file != ''
-		ORDER BY killed_time DESC
+		WHERE session_file != ''
+		ORDER BY last_seen DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -153,15 +169,15 @@ func (s *Store) ListKilled(limit int) ([]KilledSession, error) {
 	}
 	defer rows.Close()
 
-	var result []KilledSession
+	var result []PastSession
 	for rows.Next() {
-		var ks KilledSession
-		var killedAt string
-		if err := rows.Scan(&ks.Name, &ks.SessionUUID, &ks.WorkDir, &ks.FirstMsg, &killedAt); err != nil {
+		var ps PastSession
+		var lastSeen string
+		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &lastSeen); err != nil {
 			return nil, err
 		}
-		ks.KilledAt, _ = time.Parse("2006-01-02 15:04:05", killedAt)
-		result = append(result, ks)
+		ps.LastSeen, _ = time.Parse("2006-01-02 15:04:05", lastSeen)
+		result = append(result, ps)
 	}
 	return result, rows.Err()
 }
