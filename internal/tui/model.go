@@ -701,13 +701,17 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 	for i := range sessions {
 		s := &sessions[i]
 		if old, ok := known[s.FullName]; ok {
+			// Carry forward stable project directory from first discovery.
+			// Pane's current path can change if Claude cd's.
+			if old.WorkDir != "" {
+				s.WorkDir = old.WorkDir
+			}
 			// Carry forward already-resolved UUID
 			if old.SessionUUID != "" {
 				s.SessionUUID = old.SessionUUID
 				s.SessionFirstMsg = old.SessionFirstMsg
 			}
 			// Carry forward PRURL if the PR number hasn't changed.
-			// Prevents wrong URLs when Claude cd's to a different repo.
 			if old.PRURL != "" && old.PR == s.PR {
 				s.PRURL = old.PRURL
 			}
