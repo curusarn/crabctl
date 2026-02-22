@@ -307,8 +307,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
-		// Carry forward already-resolved session UUIDs, resolve new ones
-		m.mergeSessionUUIDs(msg)
+		// Carry forward already-resolved session state (UUIDs, PR URLs)
+		m.mergeSessionState(msg)
 		// Local sessions replace only local entries, preserve remote
 		remote := filterByHost(m.sessions, true)
 		m.sessions = append(msg, remote...)
@@ -681,15 +681,13 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 	return m, tea.Batch(killCmd, spinnerTickCmd())
 }
 
-// mergeSessionUUIDs carries forward already-resolved UUIDs from old sessions
-// and resolves UUIDs for newly discovered sessions using content matching.
-func (m *Model) mergeSessionUUIDs(sessions []session.Session) {
+// mergeSessionState carries forward already-resolved UUIDs and PR URLs
+// from old sessions, resolving new ones only when first discovered.
+func (m *Model) mergeSessionState(sessions []session.Session) {
 	// Build lookup from existing sessions
 	known := make(map[string]session.Session)
 	for _, s := range m.sessions {
-		if s.SessionUUID != "" {
-			known[s.FullName] = s
-		}
+		known[s.FullName] = s
 	}
 
 	// Collect all claimed UUIDs so new resolutions skip already-matched files
@@ -704,10 +702,19 @@ func (m *Model) mergeSessionUUIDs(sessions []session.Session) {
 		s := &sessions[i]
 		if old, ok := known[s.FullName]; ok {
 			// Carry forward already-resolved UUID
-			s.SessionUUID = old.SessionUUID
-			s.SessionFirstMsg = old.SessionFirstMsg
-		} else if s.Host == "" && s.WorkDir != "" {
-			// New local session: resolve UUID using pane content
+			if old.SessionUUID != "" {
+				s.SessionUUID = old.SessionUUID
+				s.SessionFirstMsg = old.SessionFirstMsg
+			}
+			// Carry forward PRURL if the PR number hasn't changed.
+			// Prevents wrong URLs when Claude cd's to a different repo.
+			if old.PRURL != "" && old.PR == s.PR {
+				s.PRURL = old.PRURL
+			}
+		}
+
+		// Resolve UUID for new local sessions
+		if s.SessionUUID == "" && s.Host == "" && s.WorkDir != "" {
 			s.SessionUUID, s.SessionFirstMsg = session.FindSessionUUID(
 				s.WorkDir, time.Now().Add(-s.Duration), s.PaneContent, claimed,
 			)
