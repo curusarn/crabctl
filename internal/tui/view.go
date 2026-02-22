@@ -250,6 +250,7 @@ func (m Model) View() string {
 		// Render rows
 		for ri, r := range rows {
 			i := m.scrollOffset + ri
+			s := m.filtered[i]
 			var row string
 			if showHost {
 				row = " " + pad(r.host, hostCol.width) + "  " + pad(r.name, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + r.changes
@@ -257,10 +258,19 @@ func (m Model) View() string {
 				row = " " + pad(r.name, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + r.changes
 			}
 
-			if i == m.cursor {
+			isCursor := i == m.cursor
+			isSelected := m.selected[s.FullName]
+			switch {
+			case isSelected && isCursor:
+				b.WriteString(cursorStyle.Render("◆>"))
+				b.WriteString(selectedRowStyle.Render(row))
+			case isSelected:
+				b.WriteString(cursorStyle.Render("◆ "))
+				b.WriteString(row)
+			case isCursor:
 				b.WriteString(cursorStyle.Render(" >"))
 				b.WriteString(selectedRowStyle.Render(row))
-			} else {
+			default:
 				b.WriteString("  ")
 				b.WriteString(row)
 			}
@@ -392,9 +402,11 @@ func (m Model) View() string {
 	if m.confirmKill != nil && m.confirmKill.Killing {
 		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 		spinner := string(spinnerChars[m.spinnerFrame%len(spinnerChars)])
-		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("%s Killing '%s'...", spinner, m.confirmKill.SessionName)))
+		killLabel := m.confirmKillLabel()
+		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("%s Killing %s...", spinner, killLabel)))
 	} else if m.confirmKill != nil {
-		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("Kill '%s'?", m.confirmKill.SessionName)))
+		killLabel := m.confirmKillLabel()
+		b.WriteString(confirmLabelStyle.Render(fmt.Sprintf("Kill %s?", killLabel)))
 		b.WriteString("  ")
 		b.WriteString(confirmKeyStyle.Render("Enter"))
 		b.WriteString(confirmDimStyle.Render("confirm"))
@@ -402,21 +414,32 @@ func (m Model) View() string {
 		b.WriteString(confirmKeyStyle.Render("Esc"))
 		b.WriteString(confirmDimStyle.Render("cancel"))
 	} else if m.resumeMode && m.preview != nil {
-		b.WriteString(helpStyle.Render("enter resume  j/k navigate  esc close preview"))
+		b.WriteString(helpStyle.Render("enter resume  ↑/↓ navigate  esc close preview"))
 	} else if m.resumeMode {
-		b.WriteString(helpStyle.Render("enter preview  type to filter  j/k navigate  esc back"))
+		b.WriteString(helpStyle.Render("enter preview  type to filter  ↑/↓ navigate  esc back"))
 	} else if m.preview != nil {
-		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  j/k navigate  ctrl+a autoforward  ctrl+k kill"))
+		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  ↑/↓ navigate  ctrl+a autoforward  ctrl+k kill"))
 	} else if strings.HasPrefix(m.input.Value(), "/new") {
 		b.WriteString(helpStyle.Render("/new <name> [dir]  —  create a new session"))
 	} else if strings.HasPrefix(m.input.Value(), "/resume") {
 		b.WriteString(helpStyle.Render("/resume  —  browse and resume past Claude sessions"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  /new  /resume  j/k navigate  ctrl+a autoforward  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  /new  /resume  ↑/↓ navigate  space select  ctrl+a autoforward  ctrl+k kill  q quit"))
 	}
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// confirmKillLabel returns a human-readable label for the kill confirmation.
+func (m Model) confirmKillLabel() string {
+	if m.confirmKill == nil || len(m.confirmKill.Targets) == 0 {
+		return ""
+	}
+	if len(m.confirmKill.Targets) == 1 {
+		return fmt.Sprintf("'%s'", m.confirmKill.Targets[0].Name)
+	}
+	return fmt.Sprintf("%d sessions", len(m.confirmKill.Targets))
 }
 
 func (m Model) renderResumeList(b *strings.Builder, showPreview bool) {

@@ -68,14 +68,14 @@ type previewState struct {
 	Output      string
 }
 
+type killTarget struct {
+	Name, FullName, Host, WorkDir string
+	SessionUUID, SessionFirstMsg  string
+}
+
 type confirmAction struct {
-	SessionName     string
-	FullName        string
-	Host            string
-	WorkDir         string
-	SessionUUID     string
-	SessionFirstMsg string
-	Killing         bool // true while kill is in progress
+	Targets []killTarget
+	Killing bool // true while kill is in progress
 }
 
 // RestoreState carries state between TUI restarts (after detaching from a session).
@@ -89,6 +89,7 @@ type Model struct {
 	filtered      []session.Session
 	cursor        int
 	scrollOffset  int
+	selected      map[string]bool // multi-select by FullName
 	input         textinput.Model
 	preview       *previewState
 	confirmKill   *confirmAction
@@ -148,6 +149,7 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 	m := Model{
 		input:            ti,
 		executors:        executors,
+		selected:         make(map[string]bool),
 		remoteLoading:    loading,
 		store:            store,
 		autoForward:      make(map[string]bool),
@@ -291,12 +293,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resumeSessions = []session.ClaudeSession(msg)
 		m.resumeMode = true
 		m.resumeCursor = 0
+		m.selected = make(map[string]bool)
 		m.input.SetValue("")
 		m.applyResumeFilter()
 		return m, nil
 
 	case sessionKilledMsg:
 		m.confirmKill = nil
+		m.selected = make(map[string]bool)
 		// Only clear preview if the killed session was the one being previewed
 		if m.preview != nil && m.preview.FullName == msg.FullName && m.preview.Host == msg.Host {
 			m.preview = nil
@@ -485,16 +489,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Ctrl+K: kill selected session (not in resume mode)
+	// Ctrl+K: kill selected session(s) (not in resume mode)
 	if key.Matches(msg, keys.Kill) && !m.resumeMode {
-		if sel := m.selectedSession(); sel != nil {
+		if len(m.selected) > 0 {
+			var targets []killTarget
+			for _, s := range m.filtered {
+				if m.selected[s.FullName] {
+					targets = append(targets, killTarget{
+						Name:            s.Name,
+						FullName:        s.FullName,
+						Host:            s.Host,
+						WorkDir:         s.WorkDir,
+						SessionUUID:     s.SessionUUID,
+						SessionFirstMsg: s.SessionFirstMsg,
+					})
+				}
+			}
+			if len(targets) > 0 {
+				m.confirmKill = &confirmAction{Targets: targets}
+			}
+		} else if sel := m.selectedSession(); sel != nil {
 			m.confirmKill = &confirmAction{
-				SessionName:     sel.Name,
-				FullName:        sel.FullName,
-				Host:            sel.Host,
-				WorkDir:         sel.WorkDir,
-				SessionUUID:     sel.SessionUUID,
-				SessionFirstMsg: sel.SessionFirstMsg,
+				Targets: []killTarget{{
+					Name:            sel.Name,
+					FullName:        sel.FullName,
+					Host:            sel.Host,
+					WorkDir:         sel.WorkDir,
+					SessionUUID:     sel.SessionUUID,
+					SessionFirstMsg: sel.SessionFirstMsg,
+				}},
 			}
 		}
 		return m, nil
@@ -529,7 +552,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Navigation: only when input is empty
+	// Navigation and selection: only when input is empty
 	if m.input.Value() == "" {
 		if key.Matches(msg, keys.Up) {
 			if m.cursor > 0 {
@@ -542,6 +565,21 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.filtered)-1 {
 				m.cursor++
 				m.ensureCursorVisible()
+			}
+			return m, nil
+		}
+		if key.Matches(msg, keys.Space) {
+			if sel := m.selectedSession(); sel != nil {
+				if m.selected[sel.FullName] {
+					delete(m.selected, sel.FullName)
+				} else {
+					m.selected[sel.FullName] = true
+				}
+				// Advance cursor down (like file managers)
+				if m.cursor < len(m.filtered)-1 {
+					m.cursor++
+					m.ensureCursorVisible()
+				}
 			}
 			return m, nil
 		}
@@ -600,6 +638,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sel == nil {
 			return m, nil
 		}
+		m.selected = make(map[string]bool)
 		m.preview = &previewState{
 			SessionName: sel.Name,
 			FullName:    sel.FullName,
@@ -672,32 +711,29 @@ func (m Model) switchPreview() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) executeKill() (Model, tea.Cmd) {
-	if m.confirmKill == nil {
+	if m.confirmKill == nil || len(m.confirmKill.Targets) == 0 {
 		return m, nil
 	}
 	m.confirmKill.Killing = true
-	fullName := m.confirmKill.FullName
-	host := m.confirmKill.Host
-	name := m.confirmKill.SessionName
-	workDir := m.confirmKill.WorkDir
-	preUUID := m.confirmKill.SessionUUID
-	preFirstMsg := m.confirmKill.SessionFirstMsg
-	exec := m.findExecutor(host)
+	targets := m.confirmKill.Targets
 	store := m.store
+	// Use the last target for the completion message (triggers refresh)
+	last := targets[len(targets)-1]
 	killCmd := func() tea.Msg {
-		uuid, firstMsg := preUUID, preFirstMsg
-		if uuid == "" {
-			// Fallback: match now if not resolved at discovery
-			paneContent, _ := exec.CapturePaneOutput(fullName, 50)
-			created := tmux.GetSessionCreated(fullName)
-			uuid, firstMsg = session.FindSessionUUID(workDir, created, paneContent, nil)
+		for _, t := range targets {
+			exec := m.findExecutor(t.Host)
+			uuid, firstMsg := t.SessionUUID, t.SessionFirstMsg
+			if uuid == "" {
+				paneContent, _ := exec.CapturePaneOutput(t.FullName, 50)
+				created := tmux.GetSessionCreated(t.FullName)
+				uuid, firstMsg = session.FindSessionUUID(t.WorkDir, created, paneContent, nil)
+			}
+			_ = exec.KillSession(t.FullName)
+			if store != nil && uuid != "" {
+				store.MarkKilled(t.FullName, uuid, t.WorkDir, firstMsg)
+			}
 		}
-		_ = exec.KillSession(fullName)
-		// Record killed session in DB
-		if store != nil && uuid != "" {
-			store.MarkKilled(fullName, uuid, workDir, firstMsg)
-		}
-		return sessionKilledMsg{Name: name, FullName: fullName, Host: host}
+		return sessionKilledMsg{Name: last.Name, FullName: last.FullName, Host: last.Host}
 	}
 	return m, tea.Batch(killCmd, spinnerTickCmd())
 }

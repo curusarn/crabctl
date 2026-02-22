@@ -8,6 +8,7 @@ type keyMap struct {
 	Enter       key.Binding
 	Kill        key.Binding
 	AutoForward key.Binding
+	Space       key.Binding
 	Escape      key.Binding
 	Quit        key.Binding
 	CtrlC       key.Binding
@@ -15,10 +16,10 @@ type keyMap struct {
 
 var keys = keyMap{
 	Up: key.NewBinding(
-		key.WithKeys("up", "k"),
+		key.WithKeys("up"),
 	),
 	Down: key.NewBinding(
-		key.WithKeys("down", "j"),
+		key.WithKeys("down"),
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
@@ -28,6 +29,9 @@ var keys = keyMap{
 	),
 	AutoForward: key.NewBinding(
 		key.WithKeys("ctrl+a"),
+	),
+	Space: key.NewBinding(
+		key.WithKeys(" "),
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
