@@ -237,18 +237,18 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 		return "", ""
 	}
 
-	// Find the session whose first message timestamp is closest to sessionStart
-	// (must be within 2 minutes after sessionStart)
+	// Strategy 1: Find session whose first message is closest to (and after)
+	// sessionStart. No fixed window — the closest start time is always best.
 	if !sessionStart.IsZero() {
 		var bestMatch *candidate
-		bestDiff := 2 * time.Minute
+		var bestDiff time.Duration = -1
 		for i := range candidates {
 			c := &candidates[i]
 			if c.started.IsZero() {
 				continue
 			}
 			diff := c.started.Sub(sessionStart)
-			if diff >= 0 && diff < bestDiff {
+			if diff >= 0 && (bestDiff < 0 || diff < bestDiff) {
 				bestDiff = diff
 				bestMatch = c
 			}
@@ -258,7 +258,26 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 		}
 	}
 
-	// Fallback: most recently modified file
+	// Strategy 2: File modified during this session's lifetime (handles
+	// resumed sessions where started predates this tmux session).
+	// Pick the most recently modified file that was active after sessionStart.
+	if !sessionStart.IsZero() {
+		var bestMatch *candidate
+		for i := range candidates {
+			c := &candidates[i]
+			if c.modTime.Before(sessionStart) {
+				continue
+			}
+			if bestMatch == nil || c.modTime.After(bestMatch.modTime) {
+				bestMatch = c
+			}
+		}
+		if bestMatch != nil {
+			return bestMatch.uuid, bestMatch.firstMsg
+		}
+	}
+
+	// Strategy 3: Last resort — most recently modified file.
 	var best *candidate
 	for i := range candidates {
 		if best == nil || candidates[i].modTime.After(best.modTime) {
