@@ -710,7 +710,7 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 			// Fallback: match now if not resolved at discovery
 			paneContent, _ := exec.CapturePaneOutput(fullName, 50)
 			created := tmux.GetSessionCreated(fullName)
-			uuid, firstMsg = session.FindSessionUUID(workDir, created, paneContent)
+			uuid, firstMsg = session.FindSessionUUID(workDir, created, paneContent, nil)
 		}
 		_ = exec.KillSession(fullName)
 		// Record killed session in DB
@@ -733,6 +733,14 @@ func (m *Model) mergeSessionUUIDs(sessions []session.Session) {
 		}
 	}
 
+	// Collect all claimed UUIDs so new resolutions skip already-matched files
+	claimed := make(map[string]bool)
+	for _, s := range m.sessions {
+		if s.SessionUUID != "" {
+			claimed[s.SessionUUID] = true
+		}
+	}
+
 	for i := range sessions {
 		s := &sessions[i]
 		if old, ok := known[s.FullName]; ok {
@@ -742,8 +750,11 @@ func (m *Model) mergeSessionUUIDs(sessions []session.Session) {
 		} else if s.Host == "" && s.WorkDir != "" {
 			// New local session: resolve UUID using pane content
 			s.SessionUUID, s.SessionFirstMsg = session.FindSessionUUID(
-				s.WorkDir, time.Now().Add(-s.Duration), s.PaneContent,
+				s.WorkDir, time.Now().Add(-s.Duration), s.PaneContent, claimed,
 			)
+			if s.SessionUUID != "" {
+				claimed[s.SessionUUID] = true
+			}
 		}
 		s.PaneContent = "" // no longer needed after UUID resolution
 	}

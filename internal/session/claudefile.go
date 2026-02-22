@@ -187,7 +187,9 @@ func extractContent(raw json.RawMessage) string {
 // FindSessionUUID finds the Claude session file for a given workDir.
 // Uses multiple strategies: content matching against pane output (most reliable),
 // timestamp matching, and modification time fallbacks.
-func FindSessionUUID(workDir string, sessionStart time.Time, paneContent string) (uuid string, firstMsg string) {
+// excludeUUIDs contains UUIDs already claimed by other sessions — these files
+// are skipped entirely (not read from disk).
+func FindSessionUUID(workDir string, sessionStart time.Time, paneContent string, excludeUUIDs map[string]bool) (uuid string, firstMsg string) {
 	if workDir == "" {
 		return "", ""
 	}
@@ -205,6 +207,40 @@ func FindSessionUUID(workDir string, sessionStart time.Time, paneContent string)
 		return "", ""
 	}
 
+	// Collect file info sorted newest-first so we read recent files first
+	// and skip old unclaimed ones.
+	type fileEntry struct {
+		uuid    string
+		modTime time.Time
+	}
+	var files []fileEntry
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		u := strings.TrimSuffix(e.Name(), ".jsonl")
+		if excludeUUIDs[u] {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileEntry{uuid: u, modTime: info.ModTime()})
+	}
+
+	// Sort newest first
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+
+	// Only read metadata from the newest files (cap to avoid scanning
+	// hundreds of old session files that will never match).
+	const maxCandidates = 10
+	if len(files) > maxCandidates {
+		files = files[:maxCandidates]
+	}
+
 	type candidate struct {
 		uuid     string
 		firstMsg string
@@ -212,22 +248,14 @@ func FindSessionUUID(workDir string, sessionStart time.Time, paneContent string)
 		modTime  time.Time
 	}
 
-	var candidates []candidate
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		u := strings.TrimSuffix(e.Name(), ".jsonl")
-		meta := readSessionMeta(filepath.Join(projectDir, u+".jsonl"))
+	candidates := make([]candidate, 0, len(files))
+	for _, f := range files {
+		meta := readSessionMeta(filepath.Join(projectDir, f.uuid+".jsonl"))
 		candidates = append(candidates, candidate{
-			uuid:     u,
+			uuid:     f.uuid,
 			firstMsg: meta.FirstMessage,
 			started:  meta.Started,
-			modTime:  info.ModTime(),
+			modTime:  f.modTime,
 		})
 	}
 
