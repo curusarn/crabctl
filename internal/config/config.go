@@ -22,7 +22,7 @@ type Config struct {
 	Hosts map[string]HostConfig `yaml:"hosts"`
 }
 
-// Load reads the config from ~/.config/crabctl/config.yaml.
+// Load reads the config from $XDG_CONFIG_HOME/crabctl/config.yaml.
 // Returns an empty config if the file doesn't exist.
 func Load() (*Config, error) {
 	home, err := os.UserHomeDir()
@@ -30,9 +30,14 @@ func Load() (*Config, error) {
 		return &Config{}, nil
 	}
 
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+
 	var cfg Config
 
-	path := filepath.Join(home, ".config", "crabctl", "config.yaml")
+	path := filepath.Join(configHome, "crabctl", "config.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err

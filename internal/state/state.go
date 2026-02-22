@@ -36,7 +36,11 @@ func Open() (*Store, error) {
 		return nil, err
 	}
 
-	dir := filepath.Join(home, ".local", "state", "crabctl")
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	dir := filepath.Join(stateHome, "crabctl")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
