@@ -21,7 +21,7 @@ tmux list-sessions -F '#{session_name}|#{session_attached}' 2>/dev/null | grep '
 ```bash
 ssh $WORKBENCH_HOST "tmux list-sessions -F '#{session_name}|#{session_attached}' 2>/dev/null"
 ```
-Remote sessions use a different prefix (typically `$USER-` or `$WORKBENCH_TMUX_PREFIX-`). Include all remote sessions in the listing.
+Remote sessions use a different prefix (typically `$USER-` or `$WORKBENCH_USER-`). Include all remote sessions in the listing.
 
 If no local or remote sessions found, report that and stop.
 

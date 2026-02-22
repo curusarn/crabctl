@@ -60,7 +60,7 @@ func Load() (*Config, error) {
 	// Fall back to env vars for workbench auto-discovery
 	if len(cfg.Hosts) == 0 {
 		if wh := os.Getenv("WORKBENCH_HOST"); wh != "" {
-			prefix := os.Getenv("WORKBENCH_TMUX_PREFIX")
+			prefix := os.Getenv("WORKBENCH_USER")
 			if prefix == "" {
 				prefix = os.Getenv("USER")
 			}
