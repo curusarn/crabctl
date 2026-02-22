@@ -184,12 +184,10 @@ func extractContent(raw json.RawMessage) string {
 	return ""
 }
 
-// FindSessionUUID finds the Claude session file for a given workDir that was
-// created closest to (and shortly after) sessionStart. This correctly identifies
-// which session file belongs to a specific tmux session, even when multiple
-// Claude sessions share the same workdir.
-// Falls back to most recently modified file if no timestamp match is found.
-func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, firstMsg string) {
+// FindSessionUUID finds the Claude session file for a given workDir.
+// Uses multiple strategies: content matching against pane output (most reliable),
+// timestamp matching, and modification time fallbacks.
+func FindSessionUUID(workDir string, sessionStart time.Time, paneContent string) (uuid string, firstMsg string) {
 	if workDir == "" {
 		return "", ""
 	}
@@ -237,7 +235,33 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 		return "", ""
 	}
 
-	// Strategy 1: Find session whose first message is closest to (and after)
+	// Strategy 1: Content matching — check if recent messages from each
+	// session file appear in the tmux pane output. Most reliable because
+	// it directly verifies which conversation is on screen.
+	if paneContent != "" && len(candidates) > 1 {
+		var bestMatch *candidate
+		bestScore := 0
+		for i := range candidates {
+			c := &candidates[i]
+			path := filepath.Join(projectDir, c.uuid+".jsonl")
+			snippets := readLastUserMessages(path, 3)
+			score := 0
+			for _, s := range snippets {
+				if strings.Contains(paneContent, s) {
+					score++
+				}
+			}
+			if score > bestScore {
+				bestScore = score
+				bestMatch = c
+			}
+		}
+		if bestMatch != nil && bestScore > 0 {
+			return bestMatch.uuid, bestMatch.firstMsg
+		}
+	}
+
+	// Strategy 2: Find session whose first message is closest to (and after)
 	// sessionStart. No fixed window — the closest start time is always best.
 	if !sessionStart.IsZero() {
 		var bestMatch *candidate
@@ -258,9 +282,8 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 		}
 	}
 
-	// Strategy 2: File modified during this session's lifetime (handles
+	// Strategy 3: File modified during this session's lifetime (handles
 	// resumed sessions where started predates this tmux session).
-	// Pick the most recently modified file that was active after sessionStart.
 	if !sessionStart.IsZero() {
 		var bestMatch *candidate
 		for i := range candidates {
@@ -277,7 +300,7 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 		}
 	}
 
-	// Strategy 3: Last resort — most recently modified file.
+	// Strategy 4: Last resort — most recently modified file.
 	var best *candidate
 	for i := range candidates {
 		if best == nil || candidates[i].modTime.After(best.modTime) {
@@ -288,6 +311,51 @@ func FindSessionUUID(workDir string, sessionStart time.Time) (uuid string, first
 		return best.uuid, best.firstMsg
 	}
 	return "", ""
+}
+
+// readLastUserMessages reads the last n user messages from a JSONL session
+// file and returns normalized text snippets suitable for substring matching.
+func readLastUserMessages(path string, n int) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	var msgs []string
+	for scanner.Scan() {
+		var msg struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue
+		}
+		if msg.Type != "user" {
+			continue
+		}
+		content := extractContent(msg.Message.Content)
+		if content == "" || strings.HasPrefix(content, "<command-message>") {
+			continue
+		}
+		// Normalize: collapse whitespace, take a meaningful snippet
+		content = strings.Join(strings.Fields(content), " ")
+		if len(content) > 80 {
+			content = content[:80]
+		}
+		msgs = append(msgs, content)
+	}
+
+	// Return last n
+	if len(msgs) > n {
+		msgs = msgs[len(msgs)-n:]
+	}
+	return msgs
 }
 
 // ReadSessionPreview reads a JSONL session file and returns a formatted

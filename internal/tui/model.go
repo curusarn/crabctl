@@ -67,11 +67,13 @@ type previewState struct {
 }
 
 type confirmAction struct {
-	SessionName string
-	FullName    string
-	Host        string
-	WorkDir     string
-	Killing     bool // true while kill is in progress
+	SessionName     string
+	FullName        string
+	Host            string
+	WorkDir         string
+	SessionUUID     string
+	SessionFirstMsg string
+	Killing         bool // true while kill is in progress
 }
 
 // RestoreState carries state between TUI restarts (after detaching from a session).
@@ -305,6 +307,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
+		// Carry forward already-resolved session UUIDs, resolve new ones
+		m.mergeSessionUUIDs(msg)
 		// Local sessions replace only local entries, preserve remote
 		remote := filterByHost(m.sessions, true)
 		m.sessions = append(msg, remote...)
@@ -475,10 +479,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, keys.Kill) && !m.resumeMode {
 		if sel := m.selectedSession(); sel != nil {
 			m.confirmKill = &confirmAction{
-				SessionName: sel.Name,
-				FullName:    sel.FullName,
-				Host:        sel.Host,
-				WorkDir:     sel.WorkDir,
+				SessionName:     sel.Name,
+				FullName:        sel.FullName,
+				Host:            sel.Host,
+				WorkDir:         sel.WorkDir,
+				SessionUUID:     sel.SessionUUID,
+				SessionFirstMsg: sel.SessionFirstMsg,
 			}
 		}
 		return m, nil
@@ -694,12 +700,18 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 	host := m.confirmKill.Host
 	name := m.confirmKill.SessionName
 	workDir := m.confirmKill.WorkDir
+	preUUID := m.confirmKill.SessionUUID
+	preFirstMsg := m.confirmKill.SessionFirstMsg
 	exec := m.findExecutor(host)
 	store := m.store
 	killCmd := func() tea.Msg {
-		// Capture Claude session UUID before killing
-		created := tmux.GetSessionCreated(fullName)
-		uuid, firstMsg := session.FindSessionUUID(workDir, created)
+		uuid, firstMsg := preUUID, preFirstMsg
+		if uuid == "" {
+			// Fallback: match now if not resolved at discovery
+			paneContent, _ := exec.CapturePaneOutput(fullName, 50)
+			created := tmux.GetSessionCreated(fullName)
+			uuid, firstMsg = session.FindSessionUUID(workDir, created, paneContent)
+		}
 		_ = exec.KillSession(fullName)
 		// Record killed session in DB
 		if store != nil && uuid != "" {
@@ -708,6 +720,33 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 		return sessionKilledMsg{Name: name}
 	}
 	return m, tea.Batch(killCmd, spinnerTickCmd())
+}
+
+// mergeSessionUUIDs carries forward already-resolved UUIDs from old sessions
+// and resolves UUIDs for newly discovered sessions using content matching.
+func (m *Model) mergeSessionUUIDs(sessions []session.Session) {
+	// Build lookup from existing sessions
+	known := make(map[string]session.Session)
+	for _, s := range m.sessions {
+		if s.SessionUUID != "" {
+			known[s.FullName] = s
+		}
+	}
+
+	for i := range sessions {
+		s := &sessions[i]
+		if old, ok := known[s.FullName]; ok {
+			// Carry forward already-resolved UUID
+			s.SessionUUID = old.SessionUUID
+			s.SessionFirstMsg = old.SessionFirstMsg
+		} else if s.Host == "" && s.WorkDir != "" {
+			// New local session: resolve UUID using pane content
+			s.SessionUUID, s.SessionFirstMsg = session.FindSessionUUID(
+				s.WorkDir, time.Now().Add(-s.Duration), s.PaneContent,
+			)
+		}
+		s.PaneContent = "" // no longer needed after UUID resolution
+	}
 }
 
 // checkAutoForward checks all sessions with autoforward enabled and sends

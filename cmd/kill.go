@@ -38,8 +38,9 @@ var killCmd = &cobra.Command{
 
 		// Capture session info before killing
 		workDir := exec.GetPanePath(fullName)
+		paneContent, _ := exec.CapturePaneOutput(fullName, 50)
 		created := tmux.GetSessionCreated(fullName)
-		uuid, firstMsg := session.FindSessionUUID(workDir, created)
+		uuid, firstMsg := session.FindSessionUUID(workDir, created, paneContent)
 
 		if err := exec.KillSession(fullName); err != nil {
 			return fmt.Errorf("failed to kill session: %w", err)

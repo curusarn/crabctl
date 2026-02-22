@@ -2,6 +2,8 @@ package session
 
 import (
 	"fmt"
+	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -38,19 +40,23 @@ func (s Status) String() string {
 }
 
 type Session struct {
-	Name          string
-	FullName      string
-	Host          string // empty for local, nickname for remote
-	Status        Status
-	Mode          string // "bypass", "plan", "", etc.
-	LastAction    string // e.g. "Write(/tmp/foo.txt)", "Done."
-	GitChanges    string // e.g. "5 files +415 -44"
-	PR            string // e.g. "PR #498"
-	Context       string // e.g. "10%" (context remaining)
-	Duration      time.Duration
-	LastActive    time.Time // most recent Claude session file mtime
-	AttachedCount int
-	WorkDir       string
+	Name            string
+	FullName        string
+	Host            string // empty for local, nickname for remote
+	Status          Status
+	Mode            string // "bypass", "plan", "", etc.
+	LastAction      string // e.g. "Write(/tmp/foo.txt)", "Done."
+	GitChanges      string // e.g. "5 files +415 -44"
+	PR              string // e.g. "PR #498"
+	PRURL           string // e.g. "https://github.com/owner/repo/pull/498"
+	Context         string // e.g. "10%" (context remaining)
+	Duration        time.Duration
+	LastActive      time.Time // most recent Claude session file mtime
+	AttachedCount   int
+	WorkDir         string
+	PaneContent     string // latest captured pane output (for UUID matching)
+	SessionUUID     string // matched Claude session file UUID
+	SessionFirstMsg string // first user message from matched session
 }
 
 // List returns all crab-* sessions with status detection.
@@ -74,11 +80,13 @@ func List() ([]Session, error) {
 			LastAction:    lastAction,
 			GitChanges:    bar.GitChanges,
 			PR:            bar.PR,
+			PRURL:         resolvePRURL(bar.PR, workDir),
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
 			LastActive:    findLatestSessionFile(workDir),
 			AttachedCount: info.AttachedCount,
 			WorkDir:       workDir,
+			PaneContent:   output,
 		})
 	}
 	SortSessions(sessions)
@@ -101,8 +109,10 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 		workDir := ex.GetPanePath(info.FullName)
 
 		var lastActive time.Time
+		var prURL string
 		if host == "" {
 			lastActive = findLatestSessionFile(workDir)
+			prURL = resolvePRURL(bar.PR, workDir)
 		}
 
 		sessions = append(sessions, Session{
@@ -114,11 +124,13 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 			LastAction:    lastAction,
 			GitChanges:    bar.GitChanges,
 			PR:            bar.PR,
+			PRURL:         prURL,
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
 			LastActive:    lastActive,
 			AttachedCount: info.AttachedCount,
 			WorkDir:       workDir,
+			PaneContent:   output,
 		})
 	}
 	return sessions, nil
@@ -425,6 +437,64 @@ func detectLastAction(lines []string) string {
 		}
 	}
 	return ""
+}
+
+// prNumberRe extracts the PR number from "PR #123".
+var prNumberRe = regexp.MustCompile(`#(\d+)`)
+
+// repoBaseURL caches workDir -> GitHub base URL (e.g. "https://github.com/owner/repo").
+// Empty string means "not a GitHub repo" (also cached to avoid repeated git calls).
+var repoBaseURL = make(map[string]string)
+
+// resolvePRURL turns "PR #123" + a working directory into a full GitHub PR URL.
+// Returns empty string if the repo isn't on GitHub or git fails.
+// Caches the git remote lookup per workDir to avoid repeated subprocess calls.
+func resolvePRURL(pr, workDir string) string {
+	if pr == "" || workDir == "" {
+		return ""
+	}
+	m := prNumberRe.FindStringSubmatch(pr)
+	if len(m) < 2 {
+		return ""
+	}
+	num := m[1]
+
+	base, cached := repoBaseURL[workDir]
+	if !cached {
+		base = resolveGitHubBase(workDir)
+		repoBaseURL[workDir] = base
+	}
+	if base == "" {
+		return ""
+	}
+	return base + "/pull/" + num
+}
+
+// resolveGitHubBase returns "https://github.com/owner/repo" for a workDir, or "".
+func resolveGitHubBase(workDir string) string {
+	out, err := exec.Command("git", "-C", workDir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	remote := strings.TrimSpace(string(out))
+
+	// Parse GitHub owner/repo from SSH or HTTPS remote
+	// git@github.com:owner/repo.git
+	// https://github.com/owner/repo.git
+	if !strings.Contains(remote, "github.com") {
+		return ""
+	}
+	remote = strings.TrimSuffix(remote, ".git")
+	var ownerRepo string
+	if idx := strings.Index(remote, "github.com:"); idx >= 0 {
+		ownerRepo = remote[idx+len("github.com:"):]
+	} else if idx := strings.Index(remote, "github.com/"); idx >= 0 {
+		ownerRepo = remote[idx+len("github.com/"):]
+	}
+	if ownerRepo == "" {
+		return ""
+	}
+	return "https://github.com/" + ownerRepo
 }
 
 // FormatDurationCoarse formats a duration using only the largest unit.
