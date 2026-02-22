@@ -35,6 +35,16 @@ var skillCmd = &cobra.Command{
 			return fmt.Errorf("failed to create %s: %w", skillDir, err)
 		}
 
+		if _, err := os.Stat(skillPath); err == nil {
+			fmt.Printf("%s already exists. Overwrite? [y/N] ", skillPath)
+			var answer string
+			fmt.Scanln(&answer)
+			if answer != "y" && answer != "Y" {
+				fmt.Println("Skipped.")
+				return nil
+			}
+		}
+
 		if err := os.WriteFile(skillPath, embeddedSkillContent, 0o644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", skillPath, err)
 		}
