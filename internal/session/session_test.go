@@ -147,6 +147,50 @@ func TestDetectStatus(t *testing.T) {
 			expect: Confirm,
 		},
 		{
+			name: "plan approval without dashed border in capture",
+			input: ` Claude has written up a plan. Would you like to proceed?
+
+ ❯ 1. Yes, clear context (52% used) and bypass permissions
+   2. Yes, and bypass permissions
+   3. Yes, manually approve edits
+   4. Type here to tell Claude what to change
+
+ ctrl-g to edit in Nvim · ~/.claude/plans/foo.md`,
+			expect: Confirm,
+		},
+		{
+			name: "plan approval long content above dashed border",
+			input: ` - item 1
+ - item 2
+ - item 3
+ - item 4
+ - item 5
+ - item 6
+ - item 7
+ - item 8
+ - item 9
+ - item 10
+ - item 11
+ - item 12
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+ Claude has written up a plan. Would you like to proceed?
+
+ ❯ 1. Yes, clear context and bypass permissions
+   2. Yes, and bypass permissions
+   3. Yes, manually approve edits
+   4. Type here to tell Claude what to change
+
+ ctrl-g to edit in Nvim · ~/.claude/plans/bar.md`,
+			expect: Confirm,
+		},
+		{
+			name: "plan approval minimal just menu items",
+			input: `  ❯ 1. Yes, and bypass permissions
+    2. Yes, manually approve edits`,
+			expect: Confirm,
+		},
+		{
 			name: "empty output",
 			input: "",
 			expect: Unknown,
@@ -196,6 +240,42 @@ TASK DONE!
 			input: `⏺ Done.
 
 ❯ implement the feature
+───────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Waiting,
+		},
+		{
+			name: "TASK_DONE underscore variant is not TaskDone",
+			input: `TASK_DONE! sent as autoforward message
+
+❯
+───────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Waiting,
+		},
+		{
+			name: "Waiting text in tool output is not running",
+			input: `Waiting…
+
+❯
+───────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Waiting,
+		},
+		{
+			name: "ellipsis in action marker is not running",
+			input: `⏺ Write(/tmp/very-long-path…)
+
+❯
+───────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Waiting,
+		},
+		{
+			name: "truncation indicator is not running",
+			input: `… +30 lines (ctrl+o to expand)
+
+❯
 ───────────────────
   ⏵⏵ bypass permissions on (shift+tab to cycle)`,
 			expect: Waiting,
@@ -300,6 +380,7 @@ func TestIsDecorationLine(t *testing.T) {
 		{"2. Yes, and bypass permissions", false},
 		{"⏸ plan mode on (shift+tab to cycle)", true},
 		{"auto-accept edits on", true},
+		{"ctrl-g to edit in Nvim · ~/.claude/plans/foo.md", true},
 		{"╭ some box", true},
 		{"╰ box end", true},
 		{"│ box content", true},
@@ -368,6 +449,50 @@ func TestEncodeProjectDir(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("encodeProjectDir(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestSeparatorPreventsContentBudgetBurn(t *testing.T) {
+	// Lines below the first ─── separator should not count toward the
+	// 10-content-line scan budget. With 12 content lines above the
+	// separator, detection should still reach the prompt because the
+	// filler line below the separator doesn't consume budget.
+	output := `line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+line 10
+line 11
+line 12
+───────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────
+  some future unknown decoration line
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`
+
+	got := detectStatus(lines(output))
+	if got != Waiting {
+		t.Errorf("detectStatus() = %v, want Waiting (separator should protect scan budget)", got)
+	}
+}
+
+func TestPlanConfirmNoSeparatorsInCapture(t *testing.T) {
+	// When the plan text is long, the ╌ dashed line may be outside
+	// the 25-line capture window. The numbered menu items alone should
+	// still result in Confirm status.
+	output := `  ❯ 1. Yes, clear context (52% used) and bypass permissions
+    2. Yes, and bypass permissions
+    3. Yes, manually approve edits
+    4. Type here to tell Claude what to change`
+
+	got := detectStatus(lines(output))
+	if got != Confirm {
+		t.Errorf("detectStatus() = %v, want Confirm (menu items without ╌ border)", got)
 	}
 }
 

@@ -261,12 +261,22 @@ func analyzeOutput(output string) (Status, statusBarInfo, string) {
 
 func detectStatus(lines []string) Status {
 	// Scan bottom-up for status indicators near the bottom of the screen.
-	// Check up to 10 non-decoration content lines to handle cases where
-	// UI elements (plan approval menus, selection items) appear between
-	// the prompt and the bottom of the screen.
-	// All checks are bottom-up only to avoid false positives from
-	// conversation content that happens to contain matching text.
+	//
+	// Claude Code's TUI layout (bottom to top):
+	//   status bar (bypass permissions, etc.)
+	//   ─── separator
+	//   prompt line (❯) or interaction area
+	//   ─── separator
+	//   chat content
+	//
+	// We track ─── separators to distinguish structural footer lines from
+	// actual content. Only lines above the first ─── count toward the
+	// content line limit (10 lines), preventing unrecognized footer
+	// elements from burning the scan budget. Detection checks (prompt,
+	// running, permission, confirm) run on all non-decoration lines
+	// regardless of separator count.
 	contentLines := 0
+	separatorsSeen := 0
 	sawNumberedMenu := false
 	sawPrompt := false
 	for i := len(lines) - 1; i >= 0 && contentLines < 10; i-- {
@@ -283,9 +293,19 @@ func detectStatus(lines []string) Status {
 			if sawNumberedMenu && strings.HasPrefix(trimmed, "╌") {
 				return Confirm
 			}
+			// ─── lines are structural separators in Claude's TUI layout
+			if strings.HasPrefix(trimmed, "───") {
+				separatorsSeen++
+			}
 			continue
 		}
-		contentLines++
+
+		// Only count toward content limit after crossing the first ───
+		// separator. Lines below it (status bar, footer decorations) are
+		// structural and shouldn't consume the scan budget.
+		if separatorsSeen > 0 {
+			contentLines++
+		}
 
 		// Once we've seen the prompt, only scan for TASK DONE! (with space)
 		// Note: the autoforward prompt contains TASK_DONE! (underscore) to
@@ -326,6 +346,9 @@ func detectStatus(lines []string) Status {
 
 	if sawPrompt {
 		return Waiting
+	}
+	if sawNumberedMenu {
+		return Confirm
 	}
 	return Unknown
 }
@@ -382,6 +405,7 @@ func isDecorationLine(trimmed string) bool {
 		strings.Contains(lower, "plan mode on") ||
 		strings.Contains(lower, "for shortcuts") ||
 		strings.Contains(lower, "esc to interrupt") ||
+		strings.Contains(lower, "ctrl-g to edit") ||
 		strings.HasPrefix(trimmed, "───") ||
 		strings.HasPrefix(trimmed, "╌") ||
 		strings.HasPrefix(trimmed, "╭") ||
