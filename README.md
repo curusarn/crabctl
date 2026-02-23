@@ -7,6 +7,13 @@ Manage Claude Code sessions in tmux.
 ## Install
 
 ```bash
+brew tap curusarn/tap
+brew install crabctl
+```
+
+### Build from source
+
+```bash
 git clone git@github.com:curusarn/crabctl.git
 cd crabctl && make
 ```
