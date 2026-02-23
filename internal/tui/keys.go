@@ -9,6 +9,7 @@ type keyMap struct {
 	Kill        key.Binding
 	AutoForward key.Binding
 	Space       key.Binding
+	Refresh     key.Binding
 	Escape      key.Binding
 	Quit        key.Binding
 	CtrlC       key.Binding
@@ -32,6 +33,9 @@ var keys = keyMap{
 	),
 	Space: key.NewBinding(
 		key.WithKeys(" "),
+	),
+	Refresh: key.NewBinding(
+		key.WithKeys("ctrl+r"),
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),

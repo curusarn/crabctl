@@ -71,6 +71,13 @@ var (
 
 const prCacheTTL = 5 * time.Minute
 
+// ClearPRCache removes all cached PR lookup results, forcing re-resolution.
+func ClearPRCache() {
+	prCacheMu.Lock()
+	prCache = make(map[string]prCacheEntry)
+	prCacheMu.Unlock()
+}
+
 // ResolveBranchPR returns the PR text and URL for a session's branch via gh CLI.
 // Results are cached for 5 minutes to avoid running gh on every tick.
 func ResolveBranchPR(host, fullName, workDir string, ex tmux.Executor) (string, string) {

@@ -31,6 +31,7 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 type tickMsg time.Time
 type remoteTickMsg time.Time
 type spinnerTickMsg time.Time
+type refreshMsg struct{}
 
 type sessionCreatedMsg struct {
 	Name string
@@ -289,6 +290,9 @@ func (m Model) findExecutor(host string) tmux.Executor {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
+	case refreshMsg:
+		return m, m.performRefresh()
+
 	case claudeSessionsMsg:
 		m.resumeSessions = []session.ClaudeSession(msg)
 		m.resumeMode = true
@@ -523,6 +527,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Ctrl+R: refresh all sessions and caches (not in resume mode)
+	if key.Matches(msg, keys.Refresh) && !m.resumeMode {
+		return m, m.performRefresh()
+	}
+
 	// Ctrl+A: toggle autoforward on selected session
 	if key.Matches(msg, keys.AutoForward) && !m.resumeMode {
 		if sel := m.selectedSession(); sel != nil {
@@ -593,6 +602,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if cmd := parseNewCommand(text); cmd != nil {
 			m.input.SetValue("")
 			return m, cmd
+		}
+
+		// /refresh command: force re-fetch all sessions and PR info
+		if text == "/refresh" {
+			m.input.SetValue("")
+			return m, m.performRefresh()
 		}
 
 		// /resume command: browse past sessions from DB
@@ -1221,6 +1236,15 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 	}
 	cs := m.resumeFiltered[m.resumeCursor]
 	return &cs
+}
+
+// performRefresh clears all cached state and triggers a full re-fetch.
+func (m *Model) performRefresh() tea.Cmd {
+	m.sessions = nil
+	session.ClearPRCache()
+	cmds := []tea.Cmd{m.refreshLocalSessions}
+	cmds = append(cmds, m.refreshRemoteSessions()...)
+	return tea.Batch(cmds...)
 }
 
 // cleanPreviewOutput strips Claude's TUI decoration from captured pane output.

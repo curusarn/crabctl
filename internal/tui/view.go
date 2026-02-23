@@ -127,7 +127,11 @@ func (m Model) View() string {
 	if m.resumeMode {
 		m.renderResumeList(&b, m.preview != nil)
 	} else if len(m.sessions) == 0 && m.err == nil {
-		b.WriteString("  No sessions. Run: crabctl new <name>\n\n")
+		b.WriteString("  No sessions. Run: crabctl new <name>\n")
+		if !m.hasRemoteHosts() && os.Getenv("INFRASTRUCTURE_AS_RUBY_PATH") != "" {
+			b.WriteString(helpStyle.Render("  Set WORKBENCH_HOST to manage remote sessions") + "\n")
+		}
+		b.WriteString("\n")
 	} else if m.err != nil {
 		b.WriteString(fmt.Sprintf("  Error: %v\n\n", m.err))
 	} else {
@@ -297,6 +301,12 @@ func (m Model) View() string {
 			b.WriteString("\n")
 		}
 
+		// Hint for users with infrastructure-as-ruby but no workbench configured
+		if !showHost && os.Getenv("INFRASTRUCTURE_AS_RUBY_PATH") != "" {
+			b.WriteString(helpStyle.Render("    Set WORKBENCH_HOST to manage remote sessions"))
+			b.WriteString("\n")
+		}
+
 		b.WriteString("\n")
 	}
 
@@ -421,10 +431,12 @@ func (m Model) View() string {
 		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  ↑/↓ navigate  ctrl+a autoforward  ctrl+k kill"))
 	} else if strings.HasPrefix(m.input.Value(), "/new") {
 		b.WriteString(helpStyle.Render("/new <name> [dir]  —  create a new session"))
+	} else if strings.HasPrefix(m.input.Value(), "/ref") {
+		b.WriteString(helpStyle.Render("/refresh  —  force re-fetch all sessions and PR info"))
 	} else if strings.HasPrefix(m.input.Value(), "/resume") {
 		b.WriteString(helpStyle.Render("/resume  —  browse and resume past Claude sessions"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  /new  /resume  ↑/↓ navigate  space select  ctrl+a autoforward  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  /new  /resume  /refresh  ↑/↓ navigate  space select  ctrl+a autoforward  ctrl+k kill  q quit"))
 	}
 	b.WriteString("\n")
 
