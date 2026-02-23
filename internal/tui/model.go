@@ -33,6 +33,13 @@ type remoteTickMsg time.Time
 type spinnerTickMsg time.Time
 type refreshMsg struct{}
 
+type prResolvedMsg struct {
+	FullName string
+	Host     string
+	PR       string
+	PRURL    string
+}
+
 type sessionCreatedMsg struct {
 	Name string
 	Err  error
@@ -110,6 +117,7 @@ type Model struct {
 	resumeSessions []session.ClaudeSession
 	resumeFiltered []session.ClaudeSession
 	resumeCursor   int
+	refreshPending  bool      // true while a user-initiated refresh is in-flight
 	lastInteraction time.Time // last key/mouse event for remote backoff
 	width, height   int
 	AttachTarget    string // set when user confirms attach
@@ -293,6 +301,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		return m, m.performRefresh()
 
+	case prResolvedMsg:
+		for i := range m.sessions {
+			if m.sessions[i].FullName == msg.FullName && m.sessions[i].Host == msg.Host {
+				if msg.PR != "" {
+					m.sessions[i].PR = msg.PR
+				}
+				m.sessions[i].PRURL = msg.PRURL
+				// Persist to DB
+				if msg.PRURL != "" && m.store != nil {
+					m.store.SavePR(msg.FullName, msg.PRURL)
+				}
+				break
+			}
+		}
+		m.applyFilter()
+		return m, nil
+
 	case claudeSessionsMsg:
 		m.resumeSessions = []session.ClaudeSession(msg)
 		m.resumeMode = true
@@ -324,6 +349,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case []session.Session:
 		m.err = nil
+		// During a user-initiated refresh, clear carried-forward PR URLs
+		// so they're re-resolved from scratch (PR cache was already cleared).
+		// Sessions stay visible to avoid a flash.
+		if m.refreshPending {
+			for i := range m.sessions {
+				m.sessions[i].PRURL = ""
+			}
+			m.refreshPending = false
+		}
 		// Carry forward already-resolved session state (UUIDs, PR URLs)
 		m.mergeSessionState(msg)
 		// Local sessions replace only local entries, preserve remote
@@ -345,6 +379,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focusSession(m.restore.FocusSession)
 			m.restore = nil
 		}
+		// Collect commands: lazy PR resolution + any focus/preview
+		var cmds []tea.Cmd
+		if prCmd := m.resolvePRsCmd(); prCmd != nil {
+			cmds = append(cmds, prCmd)
+		}
 		// Auto-focus + preview after resume
 		if m.pendingFocus != "" {
 			m.focusSession(m.pendingFocus)
@@ -355,10 +394,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Host:        sel.Host,
 				}
 				m.pendingFocus = ""
-				return m, m.capturePreviewCmd(sel.FullName, sel.Host)
+				cmds = append(cmds, m.capturePreviewCmd(sel.FullName, sel.Host))
 			}
 		}
-		return m, nil
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
 
 	case remoteSessionsMsg:
 		// Clear loading/fetching state for this host
@@ -384,6 +426,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFilter()
 		if prevFocus != "" {
 			m.focusSession(prevFocus)
+		}
+		if prCmd := m.resolvePRsCmd(); prCmd != nil {
+			return m, prCmd
 		}
 		return m, nil
 
@@ -953,8 +998,9 @@ func (m *Model) syncAutoForwardFromDB() {
 
 func (m *Model) applyFilter() {
 	query := strings.TrimSpace(m.input.Value())
-	// Don't filter when typing a command (starts with /)
-	if query == "" || strings.HasPrefix(query, "/") {
+	// Don't filter when typing a command or when in preview mode
+	// (in preview mode the input is for sending messages, not filtering)
+	if query == "" || strings.HasPrefix(query, "/") || m.preview != nil {
 		m.filtered = m.sessions
 	} else {
 		lower := strings.ToLower(query)
@@ -1239,11 +1285,48 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 }
 
 // performRefresh clears all cached state and triggers a full re-fetch.
+// Sessions are kept visible until new data arrives (no flash).
 func (m *Model) performRefresh() tea.Cmd {
-	m.sessions = nil
+	m.refreshPending = true
 	session.ClearPRCache()
 	cmds := []tea.Cmd{m.refreshLocalSessions}
-	cmds = append(cmds, m.refreshRemoteSessions()...)
+	// Mark remote hosts as loading so the spinner shows
+	for _, e := range m.executors {
+		if e.HostName() != "" {
+			m.remoteLoading[e.HostName()] = true
+		}
+	}
+	remoteCmds := m.refreshRemoteSessions()
+	cmds = append(cmds, remoteCmds...)
+	if len(m.remoteLoading) > 0 {
+		cmds = append(cmds, spinnerTickCmd())
+	}
+	return tea.Batch(cmds...)
+}
+
+// resolvePRsCmd dispatches async PR resolution for sessions missing PR URLs.
+// Only dispatches for sessions where the cache has no entry (avoids re-resolving
+// sessions that are known to have no PR).
+func (m Model) resolvePRsCmd() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, s := range m.sessions {
+		if s.PRURL != "" || s.WorkDir == "" {
+			continue // already resolved or no workdir
+		}
+		// Skip if cache already has an entry (even empty = no PR)
+		if _, _, ok := session.LookupCachedPR(s.Host, s.FullName); ok {
+			continue
+		}
+		host, fullName, workDir := s.Host, s.FullName, s.WorkDir
+		exec := m.findExecutor(host)
+		cmds = append(cmds, func() tea.Msg {
+			pr, prURL := session.ResolveBranchPR(host, fullName, workDir, exec)
+			return prResolvedMsg{FullName: fullName, Host: host, PR: pr, PRURL: prURL}
+		})
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
 	return tea.Batch(cmds...)
 }
 

@@ -122,41 +122,12 @@ func WarmPRCache(entries map[string]string) {
 
 // List returns all crab-* sessions with status detection.
 func List() ([]Session, error) {
-	infos, err := tmux.ListSessions()
-	if err != nil {
-		return nil, err
-	}
-
-	local := &tmux.LocalExecutor{}
-	sessions := make([]Session, 0, len(infos))
-	for _, info := range infos {
-		output, _ := tmux.CapturePaneOutput(info.FullName, 25)
-		status, bar, lastAction := analyzeOutput(output)
-		workDir := tmux.GetPanePath(info.FullName)
-
-		pr, prURL := ResolveBranchPR("", info.FullName, workDir, local)
-
-		sessions = append(sessions, Session{
-			Name:          info.Name,
-			FullName:      info.FullName,
-			Status:        status,
-			Mode:          bar.Mode,
-			LastAction:    lastAction,
-			GitChanges:    bar.GitChanges,
-			PR:            pr,
-			PRURL:         prURL,
-			Context:       bar.Context,
-			Duration:      time.Since(info.Created),
-			AttachedCount: info.AttachedCount,
-			WorkDir:       workDir,
-			PaneContent:   output,
-		})
-	}
-	SortSessions(sessions)
-	return sessions, nil
+	return ListExecutor(&tmux.LocalExecutor{})
 }
 
 // ListExecutor returns sessions from a single executor.
+// PR resolution is NOT done here — it's handled lazily by the TUI
+// to avoid blocking session list display on slow gh CLI calls.
 func ListExecutor(ex tmux.Executor) ([]Session, error) {
 	host := ex.HostName()
 
@@ -171,7 +142,16 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 		status, bar, lastAction := analyzeOutput(output)
 		workDir := ex.GetPanePath(info.FullName)
 
-		pr, prURL := ResolveBranchPR(host, info.FullName, workDir, ex)
+		// Use PR info from Claude Code's status bar (instant).
+		// Full URL is resolved lazily by the TUI via ResolveBranchPR.
+		pr := bar.PR
+		prURL := ""
+
+		// Apply cached PR if available (no network call)
+		if cachedPR, cachedURL, ok := LookupCachedPR(host, info.FullName); ok {
+			pr = cachedPR
+			prURL = cachedURL
+		}
 
 		sessions = append(sessions, Session{
 			Name:          info.Name,
@@ -191,6 +171,18 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 		})
 	}
 	return sessions, nil
+}
+
+// LookupCachedPR returns PR info from cache without any network calls.
+func LookupCachedPR(host, fullName string) (string, string, bool) {
+	key := host + ":" + fullName
+	prCacheMu.Lock()
+	defer prCacheMu.Unlock()
+	entry, ok := prCache[key]
+	if !ok || time.Since(entry.ResolvedAt) >= prCacheTTL {
+		return "", "", false
+	}
+	return entry.PR, entry.PRURL, true
 }
 
 // statusPriority returns sort priority (lower = more important, shown first).

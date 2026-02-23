@@ -27,15 +27,24 @@ If no local or remote sessions found, report that and stop.
 
 ### 2. Capture output from each session
 
+**ALWAYS use `crabctl capture`** instead of raw `tmux capture-pane`. It automatically strips Claude Code's autocomplete ghost text (dim/bright-black ANSI styling) and all ANSI codes, giving you clean output safe for analysis.
+
 **Local sessions:**
 ```bash
-tmux capture-pane -t SESSION_NAME -p -S -30
+crabctl capture SESSION_NAME
+crabctl capture SESSION_NAME -S 50  # capture more lines (default: 30)
 ```
 
 **Remote sessions:**
 ```bash
-ssh $WORKBENCH_HOST "tmux capture-pane -t SESSION_NAME -p -S -30"
+crabctl capture HOST:SESSION_NAME
 ```
+
+**Fallback (only if crabctl is not available):**
+```bash
+tmux capture-pane -t SESSION_NAME -p -S -30
+```
+Note: Raw tmux output will contain ghost text and ANSI codes that corrupt status detection and analysis.
 
 ### 3. Analyze and summarize
 
@@ -84,7 +93,7 @@ tmux send-keys -t SESSION_NAME Enter
 **Critical rules:**
 - Always use `-l` flag for the message text (literal mode, prevents tmux from interpreting key names like "Enter" or "C-c" within the message)
 - The Enter MUST be sent as a separate Bash tool call — NOT chained with `&&` or `;` or newlines in the same command. This is because tmux needs time to process the pasted text before receiving Enter.
-- After sending, wait 3-5 seconds then capture the pane to verify the message was submitted (look for spinner or response starting)
+- After sending, wait 3-5 seconds then run `crabctl capture SESSION_NAME` to verify the message was submitted (look for spinner or response starting)
 - If the session still shows the prompt with your text but no spinner, send Enter again
 
 **Remote sessions (send via SSH):**
@@ -141,17 +150,17 @@ Claude Code's pane output has specific patterns. Scan bottom-up, skipping empty 
 
 **Pane structure (bottom-up):** empty lines → status bar → horizontal rule → prompt line → conversation
 
-**Ghost text warning:** Raw `tmux capture-pane` without `-e` flag will show Claude's autocomplete suggestions as real text. crabctl's `CapturePaneOutput` handles this automatically, but direct tmux captures need manual dim-text stripping.
+**Ghost text:** Claude Code renders autocomplete suggestions as dim/bright-black ANSI text. Always use `crabctl capture` which strips this automatically. Raw `tmux capture-pane` will include ghost text that corrupts status detection and confuses analysis.
 
 ### 8. Multi-crab coordination
 
 When orchestrating multiple crabs working on the same repo:
 
-1. **Check before sending** — capture pane output first, the crab may already be doing what you need
+1. **Check before sending** — run `crabctl capture NAME` first, the crab may already be doing what you need
 2. **Include full context** — crabs don't share memory; every message must describe repo state, what other crabs did, and what to do/not do
 3. **Coordinate git operations** — only one crab should commit/push at a time; tell others to `git pull` after
 4. **Avoid conflicting edits** — assign different files/areas to different crabs
-5. **Verify after sending** — wait 3-5s, capture pane, confirm the crab picked up the task (spinner visible)
+5. **Verify after sending** — wait 3-5s, run `crabctl capture NAME`, confirm the crab picked up the task (spinner visible)
 
 ## Examples
 
@@ -166,6 +175,6 @@ new /crab session: do X        # Create new session with a task
 - Crab sessions are tmux sessions prefixed with `crab-`
 - They run Claude Code instances with `--dangerously-skip-permissions`
 - Multiple crabs may work on the same repo — coordinate pushes to avoid conflicts
-- Ghost/suggestion text in captures is stripped by crabctl but raw tmux captures may still show it
+- **Always use `crabctl capture` for pane output** — it strips ghost text and ANSI codes automatically
 - Use `crabctl send NAME 'message'` CLI as an alternative to tmux send-keys
 - Use `crabctl kill -f NAME` to kill a session without confirmation prompt

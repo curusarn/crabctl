@@ -62,68 +62,82 @@ func CapturePaneOutput(fullName string, lines int) (string, error) {
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
-// stripDimText removes text rendered with dim (SGR 2) or bright-black
-// (SGR 90) ANSI styling. Claude Code uses these for autocomplete
-// suggestions that appear as gray ghost text at the prompt.
+// sgrRe matches CSI SGR sequences: ESC[ <params> m
+var sgrRe = regexp.MustCompile(`\x1b\[([0-9;]*)m`)
+
+// stripDimText removes text rendered with dim (SGR 2), bright-black
+// (SGR 90), or reverse-video (SGR 7) ANSI styling. Claude Code uses
+// these for autocomplete ghost text at the prompt.
+//
+// Flow: find all SGR sequences via regex, track dim state, copy only
+// non-dim text segments. Non-SGR ANSI codes pass through (stripped
+// later by ansiRe).
 func stripDimText(s string) string {
 	var buf strings.Builder
 	buf.Grow(len(s))
 	dim := false
-	i := 0
-	for i < len(s) {
-		// Detect ESC[ CSI sequence
-		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
-			j := i + 2
-			for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == ';') {
-				j++
-			}
-			if j < len(s) && s[j] == 'm' {
-				params := s[i+2 : j]
-				j++
-				if hasSGR(params, "2") || hasSGR(params, "90") || hasSGR(params, "7") {
-					dim = true
-					i = j
-					continue
-				}
-				if params == "" || params == "0" || hasSGR(params, "0") ||
-					hasSGR(params, "22") || hasSGR(params, "27") || hasSGR(params, "39") {
-					dim = false
-				}
-				if !dim {
-					buf.WriteString(s[i:j])
-				}
-				i = j
-				continue
-			}
-		}
+	last := 0
+
+	for _, loc := range sgrRe.FindAllStringSubmatchIndex(s, -1) {
+		// loc[0:2] = full match, loc[2:4] = captured params group
 		if !dim {
-			buf.WriteByte(s[i])
+			buf.WriteString(s[last:loc[0]])
 		}
-		i++
+
+		params := s[loc[2]:loc[3]]
+		codes := parseSGRCodes(params)
+
+		if containsAny(codes, "2", "90", "7") {
+			dim = true
+		} else if params == "" || containsAny(codes, "0", "22", "27", "39") {
+			dim = false
+		}
+
+		if !dim {
+			buf.WriteString(s[loc[0]:loc[1]])
+		}
+		last = loc[1]
+	}
+
+	if !dim {
+		buf.WriteString(s[last:])
 	}
 	return buf.String()
 }
 
-func hasSGR(params, code string) bool {
+// parseSGRCodes splits semicolon-separated SGR params, skipping
+// extended color sequences so their sub-params aren't misinterpreted:
+//
+//	38;2;R;G;B  (24-bit fg color — "2" here is a color mode, not SGR dim)
+//	38;5;N      (256-color fg)
+//	48;2;R;G;B  (24-bit bg)
+//	48;5;N      (256-color bg)
+func parseSGRCodes(params string) []string {
 	parts := strings.Split(params, ";")
+	codes := make([]string, 0, len(parts))
 	for i := 0; i < len(parts); i++ {
 		p := parts[i]
-		// Skip extended color sequences where "2" or "5" are color mode
-		// indicators, not standalone SGR params:
-		//   38;2;R;G;B (24-bit fg)  38;5;N (256-color fg)
-		//   48;2;R;G;B (24-bit bg)  48;5;N (256-color bg)
 		if (p == "38" || p == "48") && i+1 < len(parts) {
 			switch parts[i+1] {
 			case "2":
-				i += 4 // skip ;2;R;G;B
+				i += 4 // skip 38;2;R;G;B
 				continue
 			case "5":
-				i += 2 // skip ;5;N
+				i += 2 // skip 38;5;N
 				continue
 			}
 		}
-		if p == code {
-			return true
+		codes = append(codes, p)
+	}
+	return codes
+}
+
+func containsAny(codes []string, targets ...string) bool {
+	for _, c := range codes {
+		for _, t := range targets {
+			if c == t {
+				return true
+			}
 		}
 	}
 	return false
