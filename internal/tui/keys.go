@@ -6,6 +6,7 @@ type keyMap struct {
 	Up           key.Binding
 	Down         key.Binding
 	Enter        key.Binding
+	Tab          key.Binding
 	Kill         key.Binding
 	AutoForward  key.Binding
 	HideChildren key.Binding
@@ -25,6 +26,9 @@ var keys = keyMap{
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
+	),
+	Tab: key.NewBinding(
+		key.WithKeys("tab"),
 	),
 	Kill: key.NewBinding(
 		key.WithKeys("ctrl+k"),

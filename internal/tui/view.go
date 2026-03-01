@@ -472,10 +472,24 @@ func (m Model) View() string {
 	} else if m.preview != nil {
 		m.input.Placeholder = "Type and press enter to send a message to the session..."
 	} else {
-		m.input.Placeholder = "Type to filter or enter command..."
+		m.input.Placeholder = "Type to filter, /command, ? for shortcuts"
 	}
 	b.WriteString(inputLabelStyle.Render(" > "))
 	b.WriteString(m.input.View())
+	// Ghost text: show selected suggestion completion inline
+	if val := strings.TrimSpace(m.input.Value()); strings.HasPrefix(val, "/") && !strings.Contains(val, " ") && m.preview == nil && !m.resumeMode {
+		matches := matchingCommands(val)
+		idx := m.suggestCursor
+		if idx >= len(matches) {
+			idx = 0
+		}
+		if len(matches) > 0 {
+			ghost := strings.TrimPrefix(matches[idx].Name, val)
+			if ghost != "" {
+				b.WriteString(helpStyle.Render(ghost))
+			}
+		}
+	}
 	b.WriteString("\n")
 
 	// Help bar / kill confirmation (same slot to avoid layout shift)
@@ -499,14 +513,25 @@ func (m Model) View() string {
 		b.WriteString(helpStyle.Render("enter preview  type to filter  ↑/↓ navigate  esc back"))
 	} else if m.preview != nil {
 		b.WriteString(helpStyle.Render("enter attach  type+enter send  esc close  ↑/↓ navigate  ctrl+a autoforward  ctrl+k kill"))
-	} else if strings.HasPrefix(m.input.Value(), "/new") {
-		b.WriteString(helpStyle.Render("/new <name> [dir]  —  create a new session"))
-	} else if strings.HasPrefix(m.input.Value(), "/ref") {
-		b.WriteString(helpStyle.Render("/refresh  —  force re-fetch all sessions and PR info"))
-	} else if strings.HasPrefix(m.input.Value(), "/resume") {
-		b.WriteString(helpStyle.Render("/resume  —  browse and resume past Claude sessions"))
+	} else if matches := matchingCommands(m.input.Value()); strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/") && len(matches) > 0 {
+		highlightStyle := lipgloss.NewStyle().Foreground(accentColor).PaddingLeft(1)
+		idx := m.suggestCursor
+		if idx >= len(matches) {
+			idx = 0
+		}
+		for i, c := range matches {
+			line := fmt.Sprintf("  %-20s — %s", c.Usage, c.Description)
+			if i == idx {
+				b.WriteString(highlightStyle.Render(line))
+			} else {
+				b.WriteString(helpStyle.Render(line))
+			}
+			b.WriteString("\n")
+		}
+	} else if strings.TrimSpace(m.input.Value()) == "?" {
+		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+r refresh  ctrl+a autoforward  ctrl+h fold  ctrl+k kill"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  /new  /resume  /refresh  ↑/↓ navigate  space select  ctrl+a autoforward  ctrl+h fold  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+k kill"))
 	}
 	b.WriteString("\n")
 

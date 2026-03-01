@@ -16,6 +16,17 @@ func parseHostName(s string) (host, name string) {
 	return "", s
 }
 
+// resolveFullName returns the full tmux session name by prepending the
+// executor's prefix — unless the name already starts with that prefix
+// (e.g. the user passed "simon-cosmic-starling" and the prefix is "simon-").
+func resolveFullName(exec tmux.Executor, name string) string {
+	prefix := exec.SessionPrefix()
+	if prefix != "" && strings.HasPrefix(name, prefix) {
+		return name
+	}
+	return prefix + name
+}
+
 // resolveExecutor returns an executor for the given host nickname or hostname.
 // Empty host returns a LocalExecutor.
 func resolveExecutor(host string) tmux.Executor {

@@ -17,7 +17,7 @@ var sendCmd = &cobra.Command{
 		host, name := parseHostName(args[0])
 		text := strings.Join(args[1:], " ")
 		exec := resolveExecutor(host)
-		fullName := exec.SessionPrefix() + name
+		fullName := resolveFullName(exec, name)
 
 		if !exec.HasSession(fullName) {
 			return fmt.Errorf("session %q not found", args[0])

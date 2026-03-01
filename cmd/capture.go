@@ -22,7 +22,7 @@ but also strips dim/autocomplete suggestions that Claude Code renders.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		host, name := parseHostName(args[0])
 		exec := resolveExecutor(host)
-		fullName := exec.SessionPrefix() + name
+		fullName := resolveFullName(exec, name)
 
 		if !exec.HasSession(fullName) {
 			return fmt.Errorf("session %q not found", args[0])

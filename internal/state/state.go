@@ -176,13 +176,11 @@ func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 	var result []PastSession
 	for rows.Next() {
 		var ps PastSession
-		var lastSeen string
 		var killed int
-		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &killed, &lastSeen); err != nil {
+		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &killed, &ps.LastSeen); err != nil {
 			return nil, err
 		}
 		ps.Killed = killed == 1
-		ps.LastSeen, _ = time.Parse("2006-01-02 15:04:05", lastSeen)
 		result = append(result, ps)
 	}
 	return result, rows.Err()
@@ -272,17 +270,12 @@ func (s *Store) LoadAllInteractions() (map[string]time.Time, error) {
 
 	result := make(map[string]time.Time)
 	for rows.Next() {
-		var name, ts string
-		if err := rows.Scan(&name, &ts); err != nil {
+		var name string
+		var t time.Time
+		if err := rows.Scan(&name, &t); err != nil {
 			return nil, err
 		}
-		// The Go SQLite driver returns ISO 8601 (2006-01-02T15:04:05Z),
-		// while the sqlite3 CLI shows space-separated format.
-		if t, err := time.Parse(time.RFC3339, ts); err == nil {
-			result[name] = t
-		} else if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
-			result[name] = t
-		}
+		result[name] = t
 	}
 	return result, rows.Err()
 }
