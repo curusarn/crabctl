@@ -4,6 +4,8 @@ TUI manager for Claude Code sessions running in tmux. Written in Go with Bubble 
 
 ## Build
 
+Always use `make build` (not `go build`) — it injects version/commit info via ldflags.
+
 ```bash
 make build        # → bin/crabctl
 make snapshot     # goreleaser local build (no publish)

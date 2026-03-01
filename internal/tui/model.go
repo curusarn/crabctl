@@ -23,6 +23,7 @@ const maxRemotePollInterval = 60 * time.Second
 const spinnerInterval = 100 * time.Millisecond
 const autoForwardDelay = 10 * time.Second
 const maxAutoForwards = 5
+const maxRemoteFailures = 3
 // AutoForwardMessage is the message sent to sessions with autoforward enabled.
 const AutoForwardMessage = `Continue working until done. Say "TASK_DONE!" (swap _ for space) if you really think you're done.`
 
@@ -56,6 +57,7 @@ type sessionKilledMsg struct {
 type remoteSessionsMsg struct {
 	Host     string
 	Sessions []session.Session
+	Err      error // non-nil if SSH fetch failed
 }
 
 type autoForwardSentMsg struct {
@@ -104,6 +106,8 @@ type Model struct {
 	executors     []tmux.Executor
 	remoteLoading  map[string]bool // hosts still being fetched (initial load)
 	remoteFetching bool           // true while a remote refresh is in-flight
+	remoteFailures map[string]int  // host → consecutive SSH failure count
+	remoteFailed   map[string]bool // hosts that hit the retry limit
 	spinnerFrame   int
 	restore       *RestoreState
 	store            *state.Store         // persistent state (nil-safe)
@@ -111,6 +115,9 @@ type Model struct {
 	autoForward      map[string]bool      // fullName -> enabled
 	autoForwardCount map[string]int       // fullName -> consecutive forwards sent
 	waitingSince     map[string]time.Time // fullName -> when first seen waiting
+	// Parent-child hierarchy
+	parents   map[string]string // session key → parent key (from DB)
+	foldState map[string]int    // session key → fold state (per-session Ctrl+H)
 	// Resume mode: browse past Claude sessions to resume
 	pendingFocus   string // full session name to focus+preview after resume
 	resumeMode     bool
@@ -160,6 +167,8 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 		executors:        executors,
 		selected:         make(map[string]bool),
 		remoteLoading:    loading,
+		remoteFailures:   make(map[string]int),
+		remoteFailed:     make(map[string]bool),
 		store:            store,
 		autoForward:      make(map[string]bool),
 		autoForwardCount: make(map[string]int),
@@ -175,7 +184,14 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 		if prs, err := store.LoadAllPRs(); err == nil {
 			session.WarmPRCache(prs)
 		}
+		if parents, err := store.LoadAllParents(); err == nil {
+			m.parents = parents
+		}
 	}
+	if m.parents == nil {
+		m.parents = make(map[string]string)
+	}
+	m.foldState = make(map[string]int)
 
 	// Restore cached sessions and focus from previous TUI instance
 	if restore != nil {
@@ -258,16 +274,21 @@ func (m Model) refreshLocalSessions() tea.Msg {
 }
 
 // refreshRemoteSessions returns commands that fetch each remote host in parallel.
+// Hosts that have hit the retry limit are skipped.
 func (m Model) refreshRemoteSessions() []tea.Cmd {
 	var cmds []tea.Cmd
 	for _, ex := range m.executors {
 		if ex.HostName() != "" {
+			if m.remoteFailed[ex.HostName()] {
+				continue // skip hosts that hit retry limit
+			}
 			ex := ex // capture
 			cmds = append(cmds, func() tea.Msg {
-				sessions, _ := session.ListExecutor(ex)
+				sessions, err := session.ListExecutor(ex)
 				return remoteSessionsMsg{
 					Host:     ex.HostName(),
 					Sessions: sessions,
+					Err:      err,
 				}
 			})
 		}
@@ -345,6 +366,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		m.resumeMode = false
+		// Reload parents from DB (new session may have a parent)
+		if m.store != nil {
+			if parents, err := m.store.LoadAllParents(); err == nil {
+				m.parents = parents
+			}
+		}
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
@@ -368,7 +395,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessions = append(msg, remote...)
-		session.SortSessions(m.sessions)
+		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState)
 		prevFocus := m.focusedSessionName()
 		m.applyFilter()
 		if prevFocus != "" {
@@ -403,9 +430,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case remoteSessionsMsg:
-		// Clear loading/fetching state for this host
-		delete(m.remoteLoading, msg.Host)
 		m.remoteFetching = false
+		// Track SSH failures — keep spinner running during retries
+		if msg.Err != nil {
+			m.remoteFailures[msg.Host]++
+			if m.remoteFailures[msg.Host] >= maxRemoteFailures {
+				m.remoteFailed[msg.Host] = true
+				delete(m.remoteLoading, msg.Host) // stop spinner on final failure
+			}
+			return m, nil
+		}
+		// Success — clear loading and reset failure counter
+		delete(m.remoteLoading, msg.Host)
+		delete(m.remoteFailures, msg.Host)
+		delete(m.remoteFailed, msg.Host)
 		// Replace sessions for this specific host, keep everything else
 		var kept []session.Session
 		var oldHostCount int
@@ -421,7 +459,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessions = append(kept, msg.Sessions...)
-		session.SortSessions(m.sessions)
+		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState)
 		prevFocus := m.focusedSessionName()
 		m.applyFilter()
 		if prevFocus != "" {
@@ -528,13 +566,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// If kill confirmation is pending, only Enter proceeds
+	// If kill is in progress (spinner), ignore all keys
+	if m.confirmKill != nil && m.confirmKill.Killing {
+		return m, nil
+	}
+
+	// If kill confirmation is pending, only Enter proceeds, only Escape cancels
 	if m.confirmKill != nil {
 		if key.Matches(msg, keys.Enter) {
 			return m.executeKill()
 		}
-		// Any other key cancels
-		m.confirmKill = nil
+		if key.Matches(msg, keys.Escape) {
+			m.confirmKill = nil
+		}
 		return m, nil
 	}
 
@@ -581,6 +625,39 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, keys.AutoForward) && !m.resumeMode {
 		if sel := m.selectedSession(); sel != nil {
 			m.ToggleAutoForward(sel.FullName)
+		}
+		return m, nil
+	}
+
+	// Ctrl+H: cycle per-session fold state (default → full → closed → default)
+	if key.Matches(msg, keys.HideChildren) && !m.resumeMode {
+		if sel := m.selectedSession(); sel != nil {
+			selKey := session.SessionKey(sel.Host, sel.FullName)
+			// Only cycle for sessions that have children
+			hasChildren := false
+			for _, parentKey := range m.parents {
+				if parentKey == selKey {
+					hasChildren = true
+					break
+				}
+			}
+			// If focused session has children, toggle its own fold state.
+			// Otherwise, toggle its parent's fold state.
+			targetKey := selKey
+			if !hasChildren {
+				targetKey = m.parents[selKey]
+			}
+			if targetKey != "" {
+				current := m.foldState[targetKey]
+				next := (current + 1) % 3
+				if next == session.FoldDefault {
+					delete(m.foldState, targetKey)
+				} else {
+					m.foldState[targetKey] = next
+				}
+				m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState)
+				m.applyFilter()
+			}
 		}
 		return m, nil
 	}
@@ -644,7 +721,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(m.input.Value())
 
 		// /new command: create a new session
-		if cmd := parseNewCommand(text); cmd != nil {
+		if cmd := m.parseNewCommand(text); cmd != nil {
 			m.input.SetValue("")
 			return m, cmd
 		}
@@ -695,7 +772,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Open preview
 		sel := m.selectedSession()
-		if sel == nil {
+		if sel == nil || sel.Virtual {
 			return m, nil
 		}
 		m.selected = make(map[string]bool)
@@ -766,6 +843,10 @@ func (m Model) switchPreview() (tea.Model, tea.Cmd) {
 	m.preview.SessionName = sel.Name
 	m.preview.FullName = sel.FullName
 	m.preview.Host = sel.Host
+	if sel.Virtual {
+		m.preview.Output = "(no active session)"
+		return m, nil
+	}
 	m.preview.Output = ""
 	return m, m.capturePreviewCmd(sel.FullName, sel.Host)
 }
@@ -1001,12 +1082,17 @@ func (m *Model) applyFilter() {
 	// Don't filter when typing a command or when in preview mode
 	// (in preview mode the input is for sending messages, not filtering)
 	if query == "" || strings.HasPrefix(query, "/") || m.preview != nil {
-		m.filtered = m.sessions
+		m.filtered = nil
+		for _, s := range m.sessions {
+			if !s.TreeHidden {
+				m.filtered = append(m.filtered, s)
+			}
+		}
 	} else {
 		lower := strings.ToLower(query)
 		m.filtered = nil
 		for _, s := range m.sessions {
-			if strings.Contains(strings.ToLower(s.Name), lower) {
+			if !s.TreeHidden && strings.Contains(strings.ToLower(s.Name), lower) {
 				m.filtered = append(m.filtered, s)
 			}
 		}
@@ -1104,7 +1190,7 @@ func (m Model) selectedSession() *session.Session {
 	return &s
 }
 
-func parseNewCommand(text string) tea.Cmd {
+func (m Model) parseNewCommand(text string) tea.Cmd {
 	if !strings.HasPrefix(text, "/new ") {
 		return nil
 	}
@@ -1122,6 +1208,9 @@ func parseNewCommand(text string) tea.Cmd {
 		dir = parts[2]
 	}
 
+	parent := tmux.DetectParent("")
+	store := m.store
+
 	return func() tea.Msg {
 		workDir := dir
 		if workDir == "" {
@@ -1138,7 +1227,11 @@ func parseNewCommand(text string) tea.Cmd {
 		}
 
 		claudeArgs := []string{"--dangerously-skip-permissions"}
-		err := tmux.NewSession(name, workDir, claudeArgs)
+		err := tmux.NewSession(name, workDir, claudeArgs, parent)
+		if err == nil && parent != "" && store != nil {
+			sessionKey := session.SessionKey("", fullName)
+			store.SaveParent(sessionKey, parent)
+		}
 		return sessionCreatedMsg{Name: name, Err: err}
 	}
 }
@@ -1217,7 +1310,7 @@ func (m Model) handleResumeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return sessionCreatedMsg{Name: name, Err: fmt.Errorf("session %q already exists", name)}
 			}
 			claudeArgs := []string{"--dangerously-skip-permissions", "--resume", cs.UUID}
-			err := tmux.NewSession(name, cs.ProjectDir, claudeArgs)
+			err := tmux.NewSession(name, cs.ProjectDir, claudeArgs, "")
 			return sessionCreatedMsg{Name: name, Err: err}
 		}
 	}
@@ -1289,6 +1382,9 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 func (m *Model) performRefresh() tea.Cmd {
 	m.refreshPending = true
 	session.ClearPRCache()
+	// Reset SSH failure tracking so failed hosts are retried
+	m.remoteFailures = make(map[string]int)
+	m.remoteFailed = make(map[string]bool)
 	cmds := []tea.Cmd{m.refreshLocalSessions}
 	// Mark remote hosts as loading so the spinner shows
 	for _, e := range m.executors {

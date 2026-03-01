@@ -56,6 +56,12 @@ type Session struct {
 	PaneContent     string // latest captured pane output (for UUID matching)
 	SessionUUID     string // matched Claude session file UUID
 	SessionFirstMsg string // first user message from matched session
+	Parent          string // parent session's FullName (e.g. "crab-orchestrator")
+	TreeDepth       int    // 0=top-level, 1=child, 2=grandchild+
+	TreePrefix      string // "├── ", "└── ", etc.
+	Virtual         bool   // true = placeholder parent with no tmux session
+	HiddenCount     int    // number of hidden descendants (computed by BuildTree)
+	TreeHidden      bool   // true = hidden by fold state, excluded from display
 }
 
 // prCacheEntry holds a cached PR lookup result.

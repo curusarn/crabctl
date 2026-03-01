@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,8 +47,13 @@ func (s *SSHExecutor) run(remoteCmd string) (string, error) {
 func (s *SSHExecutor) ListSessions() ([]SessionInfo, error) {
 	out, err := s.run(fmt.Sprintf("tmux list-sessions -F '#{session_name}|#{session_attached}|#{session_created}' 2>/dev/null"))
 	if err != nil {
-		// No server running is not an error
-		return nil, nil
+		// SSH exit code 255 = connection failure; other codes mean the
+		// remote command ran but failed (e.g., tmux not running).
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() != 255 {
+			return nil, nil // tmux not running, not an SSH error
+		}
+		return nil, err // SSH connection failure
 	}
 	return parseSessionList(out, s.Prefix), nil
 }
@@ -62,9 +68,10 @@ func (s *SSHExecutor) CapturePaneOutput(fullName string, lines int) (string, err
 	return cleaned, nil
 }
 
-func (s *SSHExecutor) NewSession(name, workDir string, claudeArgs []string) error {
+func (s *SSHExecutor) NewSession(name, workDir string, claudeArgs []string, parent string) error {
 	fullName := s.Prefix + name
-	cmd := fmt.Sprintf("tmux new-session -d -s %s", shellQuote(fullName))
+	cmd := fmt.Sprintf("tmux new-session -d -s %s -e %s",
+		shellQuote(fullName), shellQuote("CRABCTL_NAME="+fullName))
 	if workDir != "" {
 		cmd += fmt.Sprintf(" -c %s", shellQuote(workDir))
 	}
@@ -86,6 +93,12 @@ func (s *SSHExecutor) NewSession(name, workDir string, claudeArgs []string) erro
 	if len(claudeArgs) > 0 {
 		s.run(fmt.Sprintf("tmux set-environment -t %s CRABCTL_FLAGS %s",
 			shellQuote(fullName), shellQuote(strings.Join(claudeArgs, " "))))
+	}
+
+	// Store parent reference
+	if parent != "" {
+		s.run(fmt.Sprintf("tmux set-environment -t %s CRABCTL_PARENT %s",
+			shellQuote(fullName), shellQuote(parent)))
 	}
 
 	return nil

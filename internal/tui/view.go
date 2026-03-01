@@ -89,6 +89,24 @@ var (
 				Foreground(lipgloss.AdaptiveColor{Light: "#444444", Dark: "#BBBBBB"})
 )
 
+// highlightRow applies the highlight background to an entire row,
+// persisting through inner ANSI style resets. It works by extracting
+// the raw background escape sequence from lipgloss and re-injecting
+// it after every SGR reset (\x1b[0m) in the row.
+func highlightRow(row string) string {
+	// Render a probe character to extract the background escape sequence
+	probe := selectedRowStyle.Render("X")
+	xIdx := strings.Index(probe, "X")
+	if xIdx <= 0 {
+		return selectedRowStyle.Render(row)
+	}
+	bgOpen := probe[:xIdx]
+
+	// Apply background at the start and re-apply after every SGR reset
+	result := bgOpen + strings.ReplaceAll(row, "\x1b[0m", "\x1b[0m"+bgOpen) + "\x1b[0m"
+	return result
+}
+
 // pad right-pads s to width with spaces (based on visual width, not byte count).
 func pad(s string, width int) string {
 	visual := lipgloss.Width(s)
@@ -148,31 +166,47 @@ func (m Model) View() string {
 		// Precompute cell values for visible rows
 		type rowData struct {
 			host, name, dir, status, mode, info, changes string
+			treePrefix string // rendered tree prefix (dim styled)
+			virtual    bool   // virtual parent placeholder
 		}
 		rows := make([]rowData, 0, end-m.scrollOffset)
 		for i := m.scrollOffset; i < end; i++ {
 			s := m.filtered[i]
 			name := s.Name
+			// When hiding children, show child count on parents
+			if s.HiddenCount > 0 {
+				name += fmt.Sprintf(" (%d)", s.HiddenCount)
+			}
 			if len(name) > 32 {
 				name = name[:29] + "..."
 			}
 			host := s.Host
-			if host == "" && showHost {
+			if host == "" && showHost && !s.Virtual {
 				host = "local"
 			}
 			mode := s.Mode
 			if m.autoForward[s.FullName] {
 				mode = "autoforward"
 			}
-			rows = append(rows, rowData{
-				host:    host,
-				name:    name,
-				dir:     shortenPath(s.WorkDir, 20),
-				status:  renderStatusWithAge(s),
-				mode:    renderMode(mode),
-				info:    renderInfo(s),
-				changes: renderChanges(s),
-			})
+			rd := rowData{
+				host:       host,
+				name:       name,
+				dir:        shortenPath(s.WorkDir, 20),
+				status:     renderStatusWithAge(s),
+				mode:       renderMode(mode),
+				info:       renderInfo(s),
+				changes:    renderChanges(s),
+				treePrefix: s.TreePrefix,
+				virtual:    s.Virtual,
+			}
+			if s.Virtual {
+				rd.status = statusUnknown.Render("-")
+				rd.mode = statusUnknown.Render("-")
+				rd.info = ""
+				rd.changes = ""
+				rd.dir = ""
+			}
+			rows = append(rows, rd)
 		}
 
 		// Measure column widths (using lipgloss.Width for ANSI-aware measurement)
@@ -181,7 +215,7 @@ func (m Model) View() string {
 			header          string
 		}
 		cols := []colSpec{
-			{min: 4, max: 32, header: "NAME"},
+			{min: 4, max: 40, header: "NAME"},
 			{min: 4, max: 20, header: "DIR"},
 			{min: 7, max: 14, header: "STATUS"},
 			{min: 4, max: 12, header: "MODE"},
@@ -189,11 +223,15 @@ func (m Model) View() string {
 		}
 		hostCol := colSpec{min: 4, max: 10, header: "HOST"}
 
-		// Measure from data
+		// Measure from data (include tree prefix in NAME width)
 		for _, r := range rows {
-			vals := []string{r.name, r.dir, r.status, r.mode, r.info}
-			for j, v := range vals {
-				w := lipgloss.Width(v)
+			nameWidth := len(r.treePrefix) + lipgloss.Width(r.name)
+			if nameWidth > cols[0].width {
+				cols[0].width = nameWidth
+			}
+			vals := []string{"", r.dir, r.status, r.mode, r.info}
+			for j := 1; j < len(vals); j++ {
+				w := lipgloss.Width(vals[j])
 				if w > cols[j].width {
 					cols[j].width = w
 				}
@@ -231,14 +269,23 @@ func (m Model) View() string {
 			}
 		}
 
+		// Measure CHANGES column width (last column, needs padding for even highlights)
+		wChanges := len("CHANGES")
+		for _, r := range rows {
+			w := lipgloss.Width(r.changes)
+			if w > wChanges {
+				wChanges = w
+			}
+		}
+
 		wName, wDir, wStatus, wMode, wInfo := cols[0].width, cols[1].width, cols[2].width, cols[3].width, cols[4].width
 
 		// Render header
 		if showHost {
-			header := "    " + pad("HOST", hostCol.width) + "  " + pad("NAME", wName) + "  " + pad("DIR", wDir) + "  " + pad("STATUS", wStatus) + "  " + pad("MODE", wMode) + "  " + pad("INFO", wInfo) + "  CHANGES"
+			header := "  " + pad("HOST", hostCol.width) + "  " + pad("NAME", wName) + "  " + pad("DIR", wDir) + "  " + pad("STATUS", wStatus) + "  " + pad("MODE", wMode) + "  " + pad("INFO", wInfo) + "  " + pad("CHANGES", wChanges)
 			b.WriteString(headerStyle.Render(header))
 		} else {
-			header := "    " + pad("NAME", wName) + "  " + pad("DIR", wDir) + "  " + pad("STATUS", wStatus) + "  " + pad("MODE", wMode) + "  " + pad("INFO", wInfo) + "  CHANGES"
+			header := "  " + pad("NAME", wName) + "  " + pad("DIR", wDir) + "  " + pad("STATUS", wStatus) + "  " + pad("MODE", wMode) + "  " + pad("INFO", wInfo) + "  " + pad("CHANGES", wChanges)
 			b.WriteString(headerStyle.Render(header))
 		}
 		b.WriteString("\n")
@@ -255,11 +302,22 @@ func (m Model) View() string {
 		for ri, r := range rows {
 			i := m.scrollOffset + ri
 			s := m.filtered[i]
+			// Build name cell with tree prefix
+			nameCell := r.name
+			if r.treePrefix != "" {
+				nameCell = actionStyle.Render(r.treePrefix) + r.name
+			}
+
 			var row string
 			if showHost {
-				row = " " + pad(r.host, hostCol.width) + "  " + pad(r.name, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + r.changes
+				row = " " + pad(r.host, hostCol.width) + "  " + pad(nameCell, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + pad(r.changes, wChanges)
 			} else {
-				row = " " + pad(r.name, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + r.changes
+				row = " " + pad(nameCell, wName) + "  " + pad(r.dir, wDir) + "  " + pad(r.status, wStatus) + "  " + pad(r.mode, wMode) + "  " + pad(r.info, wInfo) + "  " + pad(r.changes, wChanges)
+			}
+
+			// Virtual (no tmux session) parents are fully dimmed
+			if r.virtual {
+				row = statusUnknown.Render(ansi.Strip(row))
 			}
 
 			isCursor := i == m.cursor
@@ -267,13 +325,13 @@ func (m Model) View() string {
 			switch {
 			case isSelected && isCursor:
 				b.WriteString(cursorStyle.Render("◆>"))
-				b.WriteString(selectedRowStyle.Render(row))
+				b.WriteString(highlightRow(row))
 			case isSelected:
 				b.WriteString(cursorStyle.Render("◆ "))
 				b.WriteString(row)
 			case isCursor:
 				b.WriteString(cursorStyle.Render(" >"))
-				b.WriteString(selectedRowStyle.Render(row))
+				b.WriteString(highlightRow(row))
 			default:
 				b.WriteString("  ")
 				b.WriteString(row)
@@ -298,6 +356,18 @@ func (m Model) View() string {
 			}
 			sort.Strings(hosts)
 			b.WriteString(helpStyle.Render(fmt.Sprintf("    %s fetching %s...", spinner, strings.Join(hosts, ", "))))
+			b.WriteString("\n")
+		}
+
+		// Failed SSH hosts
+		if len(m.remoteFailed) > 0 {
+			var failedHosts []string
+			for h := range m.remoteFailed {
+				failedHosts = append(failedHosts, h)
+			}
+			sort.Strings(failedHosts)
+			b.WriteString(statusPermission.Render("    ⚠︎ ssh failed " + strings.Join(failedHosts, ", ")))
+			b.WriteString(helpStyle.Render(" · /refresh to try again"))
 			b.WriteString("\n")
 		}
 
@@ -436,7 +506,7 @@ func (m Model) View() string {
 	} else if strings.HasPrefix(m.input.Value(), "/resume") {
 		b.WriteString(helpStyle.Render("/resume  —  browse and resume past Claude sessions"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  /new  /resume  /refresh  ↑/↓ navigate  space select  ctrl+a autoforward  ctrl+k kill  q quit"))
+		b.WriteString(helpStyle.Render("enter preview  /new  /resume  /refresh  ↑/↓ navigate  space select  ctrl+a autoforward  ctrl+h fold  ctrl+k kill  q quit"))
 	}
 	b.WriteString("\n")
 
