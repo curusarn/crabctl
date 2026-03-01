@@ -80,6 +80,7 @@ type sessionKilledMsg struct {
 	Name     string
 	FullName string
 	Host     string
+	Killed   []killTarget // all targets that were killed
 }
 
 // remoteSessionsMsg carries sessions from a single remote host.
@@ -401,6 +402,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.preview != nil && m.preview.FullName == msg.FullName && m.preview.Host == msg.Host {
 			m.preview = nil
 		}
+		// Immediately remove killed sessions from the list
+		killed := make(map[string]bool, len(msg.Killed))
+		for _, t := range msg.Killed {
+			killed[t.Host+"\x00"+t.FullName] = true
+		}
+		alive := m.sessions[:0]
+		for _, s := range m.sessions {
+			if !killed[s.Host+"\x00"+s.FullName] {
+				alive = append(alive, s)
+			}
+		}
+		m.sessions = alive
+		m.applyFilter()
+		// Still refresh to pick up any other changes
 		cmds := []tea.Cmd{m.refreshLocalSessions}
 		cmds = append(cmds, m.refreshRemoteSessions()...)
 		return m, tea.Batch(cmds...)
@@ -998,7 +1013,7 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 				store.MarkKilled(t.FullName, uuid, t.WorkDir, firstMsg)
 			}
 		}
-		return sessionKilledMsg{Name: last.Name, FullName: last.FullName, Host: last.Host}
+		return sessionKilledMsg{Name: last.Name, FullName: last.FullName, Host: last.Host, Killed: targets}
 	}
 	return m, tea.Batch(killCmd, spinnerTickCmd())
 }
