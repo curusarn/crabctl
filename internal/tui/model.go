@@ -29,6 +29,36 @@ const AutoForwardMessage = `Continue working until done. Say "TASK_DONE!" (swap 
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+type commandDef struct {
+	Name        string // "/new"
+	Usage       string // "/new <name> [dir]"
+	Description string // "create a new session"
+}
+
+var commandDefs = []commandDef{
+	{"/new", "/new <name> [dir]", "create a new session"},
+	{"/refresh", "/refresh", "force re-fetch all sessions and PR info"},
+	{"/resume", "/resume", "browse and resume past Claude sessions"},
+	{"/quit", "/quit", "quit crabctl"},
+}
+
+func matchingCommands(input string) []commandDef {
+	cmd := strings.TrimSpace(input)
+	if cmd == "/" {
+		return commandDefs
+	}
+	if strings.Contains(cmd, " ") {
+		return nil
+	}
+	var matches []commandDef
+	for _, c := range commandDefs {
+		if strings.HasPrefix(c.Name, cmd) {
+			matches = append(matches, c)
+		}
+	}
+	return matches
+}
+
 type tickMsg time.Time
 type remoteTickMsg time.Time
 type spinnerTickMsg time.Time
@@ -90,8 +120,9 @@ type confirmAction struct {
 
 // RestoreState carries state between TUI restarts (after detaching from a session).
 type RestoreState struct {
-	FocusSession string            // name of session to re-focus
-	Sessions     []session.Session // cached sessions to avoid blank screen
+	FocusSession   string               // name of session to re-focus
+	Sessions       []session.Session    // cached sessions to avoid blank screen
+	LastInteracted map[string]time.Time // interaction times survive attach/detach
 }
 
 type Model struct {
@@ -100,6 +131,7 @@ type Model struct {
 	cursor        int
 	scrollOffset  int
 	selected      map[string]bool // multi-select by FullName
+	suggestCursor int
 	input         textinput.Model
 	preview       *previewState
 	confirmKill   *confirmAction
@@ -116,8 +148,9 @@ type Model struct {
 	autoForwardCount map[string]int       // fullName -> consecutive forwards sent
 	waitingSince     map[string]time.Time // fullName -> when first seen waiting
 	// Parent-child hierarchy
-	parents   map[string]string // session key → parent key (from DB)
-	foldState map[string]int    // session key → fold state (per-session Ctrl+H)
+	parents        map[string]string    // session key → parent key (from DB)
+	foldState      map[string]int       // session key → fold state (per-session Ctrl+H)
+	lastInteracted map[string]time.Time // session key → last attach/send time
 	// Resume mode: browse past Claude sessions to resume
 	pendingFocus   string // full session name to focus+preview after resume
 	resumeMode     bool
@@ -142,8 +175,9 @@ func (m Model) GetRestoreState() *RestoreState {
 		focus = m.AttachTarget
 	}
 	return &RestoreState{
-		FocusSession: focus,
-		Sessions:     m.sessions,
+		FocusSession:   focus,
+		Sessions:       m.sessions,
+		LastInteracted: m.lastInteracted,
 	}
 }
 
@@ -187,9 +221,15 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 		if parents, err := store.LoadAllParents(); err == nil {
 			m.parents = parents
 		}
+		if li, err := store.LoadAllInteractions(); err == nil {
+			m.lastInteracted = li
+		}
 	}
 	if m.parents == nil {
 		m.parents = make(map[string]string)
+	}
+	if m.lastInteracted == nil {
+		m.lastInteracted = make(map[string]time.Time)
 	}
 	m.foldState = make(map[string]int)
 
@@ -204,6 +244,12 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 				if s.Host != "" {
 					delete(m.remoteLoading, s.Host)
 				}
+			}
+		}
+		// Merge restored interaction times (in-memory updates from previous instance)
+		for k, t := range restore.LastInteracted {
+			if t.After(m.lastInteracted[k]) {
+				m.lastInteracted[k] = t
 			}
 		}
 	}
@@ -395,7 +441,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessions = append(msg, remote...)
-		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState)
+		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState, m.lastInteracted)
 		prevFocus := m.focusedSessionName()
 		m.applyFilter()
 		if prevFocus != "" {
@@ -459,7 +505,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessions = append(kept, msg.Sessions...)
-		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState)
+		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState, m.lastInteracted)
 		prevFocus := m.focusedSessionName()
 		m.applyFilter()
 		if prevFocus != "" {
@@ -629,11 +675,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Ctrl+H: cycle per-session fold state (default → full → closed → default)
+	// Ctrl+H: toggle fold state (show all / hide all children)
 	if key.Matches(msg, keys.HideChildren) && !m.resumeMode {
 		if sel := m.selectedSession(); sel != nil {
 			selKey := session.SessionKey(sel.Host, sel.FullName)
-			// Only cycle for sessions that have children
+			// Check if session has children
 			hasChildren := false
 			for _, parentKey := range m.parents {
 				if parentKey == selKey {
@@ -642,30 +688,33 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			// If focused session has children, toggle its own fold state.
-			// Otherwise, toggle its parent's fold state.
+			// Otherwise, toggle its parent's fold state and move cursor to parent.
 			targetKey := selKey
+			focusParent := false
 			if !hasChildren {
 				targetKey = m.parents[selKey]
+				focusParent = true
 			}
 			if targetKey != "" {
-				current := m.foldState[targetKey]
-				next := (current + 1) % 3
-				if next == session.FoldDefault {
+				if m.foldState[targetKey] == session.FoldClosed {
 					delete(m.foldState, targetKey)
 				} else {
-					m.foldState[targetKey] = next
+					m.foldState[targetKey] = session.FoldClosed
 				}
-				m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState)
+				m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState, m.lastInteracted)
 				m.applyFilter()
+				if focusParent {
+					for i, s := range m.filtered {
+						k := session.SessionKey(s.Host, s.FullName)
+						if k == targetKey {
+							m.cursor = i
+							break
+						}
+					}
+				}
 			}
 		}
 		return m, nil
-	}
-
-	// q quits only when input is empty and no preview/resume
-	if key.Matches(msg, keys.Quit) && m.input.Value() == "" && m.preview == nil && !m.resumeMode {
-		m.quitting = true
-		return m, tea.Quit
 	}
 
 	// Resume mode key handling
@@ -683,6 +732,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Command suggestion navigation: when typing a /command prefix
+	text := strings.TrimSpace(m.input.Value())
+	if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+		matches := matchingCommands(text)
+		if len(matches) > 0 {
+			if key.Matches(msg, keys.Up) {
+				if m.suggestCursor > 0 {
+					m.suggestCursor--
+				}
+				return m, nil
+			}
+			if key.Matches(msg, keys.Down) {
+				if m.suggestCursor < len(matches)-1 {
+					m.suggestCursor++
+				}
+				return m, nil
+			}
+		}
+	}
+
 	// Navigation and selection: only when input is empty
 	if m.input.Value() == "" {
 		if key.Matches(msg, keys.Up) {
@@ -716,9 +785,45 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Tab: complete to selected matching command
+	if key.Matches(msg, keys.Tab) {
+		text := strings.TrimSpace(m.input.Value())
+		if strings.HasPrefix(text, "/") {
+			matches := matchingCommands(text)
+			idx := m.suggestCursor
+			if idx >= len(matches) {
+				idx = 0
+			}
+			if len(matches) > 0 && text != matches[idx].Name {
+				m.input.SetValue(matches[idx].Name + " ")
+				m.input.CursorEnd()
+				m.suggestCursor = 0
+			}
+		}
+		return m, nil
+	}
+
 	// Enter
 	if key.Matches(msg, keys.Enter) {
 		text := strings.TrimSpace(m.input.Value())
+
+		// Resolve partial command to selected suggestion
+		if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+			matches := matchingCommands(text)
+			idx := m.suggestCursor
+			if idx >= len(matches) {
+				idx = 0
+			}
+			if len(matches) > 0 && text != matches[idx].Name {
+				text = matches[idx].Name
+			}
+		}
+
+		// /quit command
+		if text == "/quit" {
+			m.quitting = true
+			return m, tea.Quit
+		}
 
 		// /new command: create a new session
 		if cmd := m.parseNewCommand(text); cmd != nil {
@@ -733,7 +838,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// /resume command: browse past sessions from DB
-		if text == "/resume" || strings.HasPrefix(text, "/resume ") {
+		if text == "/resume" {
 			store := m.store
 			executors := m.executors
 			return m, func() tea.Msg {
@@ -786,8 +891,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Default: update text input and refilter
+	prev := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.input.Value() != prev {
+		m.suggestCursor = 0
+	}
 	m.applyFilter()
 	return m, cmd
 }
@@ -816,6 +925,7 @@ func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(m.input.Value())
 		if text == "" {
 			// Attach to session
+			m.recordInteraction(m.preview.FullName, m.preview.Host)
 			m.AttachTarget = m.preview.FullName
 			m.AttachHost = m.preview.Host
 			m.preview = nil
@@ -823,6 +933,7 @@ func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		// Send text to session
+		m.recordInteraction(m.preview.FullName, m.preview.Host)
 		exec := m.findExecutor(m.preview.Host)
 		_ = exec.SendKeys(m.preview.FullName, text)
 		m.input.SetValue("")
@@ -849,6 +960,15 @@ func (m Model) switchPreview() (tea.Model, tea.Cmd) {
 	}
 	m.preview.Output = ""
 	return m, m.capturePreviewCmd(sel.FullName, sel.Host)
+}
+
+// recordInteraction saves an interaction timestamp for a session (in-memory + DB).
+func (m *Model) recordInteraction(fullName, host string) {
+	key := session.SessionKey(host, fullName)
+	m.lastInteracted[key] = time.Now().UTC()
+	if m.store != nil {
+		_ = m.store.SaveInteraction(key)
+	}
 }
 
 func (m Model) executeKill() (Model, tea.Cmd) {
@@ -1081,7 +1201,7 @@ func (m *Model) applyFilter() {
 	query := strings.TrimSpace(m.input.Value())
 	// Don't filter when typing a command or when in preview mode
 	// (in preview mode the input is for sending messages, not filtering)
-	if query == "" || strings.HasPrefix(query, "/") || m.preview != nil {
+	if query == "" || strings.HasPrefix(query, "/") || query == "?" || m.preview != nil {
 		m.filtered = nil
 		for _, s := range m.sessions {
 			if !s.TreeHidden {
@@ -1382,6 +1502,16 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 func (m *Model) performRefresh() tea.Cmd {
 	m.refreshPending = true
 	session.ClearPRCache()
+	// Reload interactions from DB (picks up changes from other crabctl instances)
+	if m.store != nil {
+		if li, err := m.store.LoadAllInteractions(); err == nil {
+			for k, t := range li {
+				if t.After(m.lastInteracted[k]) {
+					m.lastInteracted[k] = t
+				}
+			}
+		}
+	}
 	// Reset SSH failure tracking so failed hosts are retried
 	m.remoteFailures = make(map[string]int)
 	m.remoteFailed = make(map[string]bool)

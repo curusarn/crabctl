@@ -1,12 +1,14 @@
 package session
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // Fold states for per-session tree folding.
 const (
-	FoldDefault = 0 // show direct children + grandchildren (2 levels)
-	FoldFull    = 1 // show all descendants
-	FoldClosed  = 2 // hide all descendants
+	FoldOpen   = 0 // show all descendants (default)
+	FoldClosed = 1 // hide all descendants
 )
 
 // MaxTreeDepth is the maximum tree depth supported.
@@ -22,12 +24,16 @@ func SessionKey(host, fullName string) string {
 
 // BuildTree arranges sessions into a parent-child tree structure.
 // parents maps session key (SessionKey) to parent key.
-// foldState maps session key to fold state (FoldDefault/FoldFull/FoldClosed).
+// foldState maps session key to fold state (FoldOpen/FoldClosed).
+// lastInteracted maps session key to the last interaction time (attach/send).
 // Returns a flat list ordered for tree display with TreeDepth, TreePrefix, and Virtual fields set.
 // Sessions hidden by fold state are appended at the end with TreeHidden=true.
-func BuildTree(sessions []Session, parents map[string]string, foldState map[string]int) []Session {
+func BuildTree(sessions []Session, parents map[string]string, foldState map[string]int, lastInteracted map[string]time.Time) []Session {
 	if foldState == nil {
 		foldState = make(map[string]int)
+	}
+	if lastInteracted == nil {
+		lastInteracted = make(map[string]time.Time)
 	}
 
 	// Build lookup of active sessions by key
@@ -65,10 +71,36 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 		}
 	}
 
-	// Sort children within each group by status priority, then duration
+	// groupInteractionTime returns the max interaction time for a session
+	// and all its descendants (recursive).
+	var groupInteractionTime func(key string) time.Time
+	groupInteractionTime = func(key string) time.Time {
+		best := lastInteracted[key]
+		for _, idx := range children[key] {
+			childKey := SessionKey(sessions[idx].Host, sessions[idx].FullName)
+			if ct := groupInteractionTime(childKey); ct.After(best) {
+				best = ct
+			}
+		}
+		return best
+	}
+
+	// Sort children within each group: interacted first (most recent), then by status/duration
 	for key := range children {
 		idxs := children[key]
 		sort.SliceStable(idxs, func(a, b int) bool {
+			ka := SessionKey(sessions[idxs[a]].Host, sessions[idxs[a]].FullName)
+			kb := SessionKey(sessions[idxs[b]].Host, sessions[idxs[b]].FullName)
+			ta := groupInteractionTime(ka)
+			tb := groupInteractionTime(kb)
+			aHas := !ta.IsZero()
+			bHas := !tb.IsZero()
+			if aHas != bHas {
+				return aHas
+			}
+			if aHas && bHas {
+				return ta.After(tb)
+			}
 			sa, sb := sessions[idxs[a]], sessions[idxs[b]]
 			pa, pb := statusPriority(sa.Status), statusPriority(sb.Status)
 			if pa != pb {
@@ -96,8 +128,20 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 		roots = append(roots, rootEntry{key: key, isVirtual: true, idx: -1})
 	}
 
-	// Sort roots: real sessions first (by status priority), virtual after
+	// Sort roots: interacted first (most recent), then real before virtual,
+	// then by status priority and duration.
 	sort.SliceStable(roots, func(a, b int) bool {
+		ta := groupInteractionTime(roots[a].key)
+		tb := groupInteractionTime(roots[b].key)
+		aHas := !ta.IsZero()
+		bHas := !tb.IsZero()
+		if aHas != bHas {
+			return aHas
+		}
+		if aHas && bHas {
+			return ta.After(tb)
+		}
+		// No interaction times — fall back to original ordering
 		if roots[a].isVirtual != roots[b].isVirtual {
 			return !roots[a].isVirtual
 		}
@@ -131,14 +175,10 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 
 	// Helper: visible levels for a session based on fold state
 	visibleLevels := func(key string) int {
-		switch foldState[key] {
-		case FoldFull:
-			return MaxTreeDepth
-		case FoldClosed:
+		if foldState[key] == FoldClosed {
 			return 0
-		default:
-			return 2
 		}
+		return MaxTreeDepth
 	}
 
 	// Track which session indices were included in the visible tree
@@ -206,12 +246,14 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 			newStack[len(isLastStack)] = isLast
 			addSubtree(childKey, childRemaining, newStack)
 
-			// Compute hidden count: total descendants minus actually shown
-			totalDesc := countDescendants(childKey)
-			added := len(result) - childResultIdx - 1
-			hidden := totalDesc - added
-			if hidden > 0 {
-				result[childResultIdx].HiddenCount = hidden
+			// Set HiddenCount only at the fold boundary — the node
+			// whose own state/depth limit causes children to be hidden.
+			// Don't propagate counts from descendant fold states upward.
+			if childRemaining == 0 {
+				totalDesc := countDescendants(childKey)
+				if totalDesc > 0 {
+					result[childResultIdx].HiddenCount = totalDesc
+				}
 			}
 		}
 	}
@@ -243,13 +285,14 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 		rootResultIdx := len(result) - 1
 		addSubtree(rootKey, remaining, nil)
 
-		// Compute hidden count for root
-		totalDesc := countDescendants(rootKey)
-		added := len(result) - rootResultIdx - 1
-		hidden := totalDesc - added
-		if hidden > 0 {
-			result[rootResultIdx].HiddenCount = hidden
+		// Set HiddenCount only if this root's own fold state hides children
+		if remaining == 0 {
+			totalDesc := countDescendants(rootKey)
+			if totalDesc > 0 {
+				result[rootResultIdx].HiddenCount = totalDesc
+			}
 		}
+		_ = rootResultIdx
 	}
 
 	// Append sessions not included in the visible tree (hidden by fold state).

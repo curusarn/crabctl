@@ -68,6 +68,7 @@ func Open() (*Store, error) {
 		"ALTER TABLE sessions ADD COLUMN killed_at TIMESTAMP",
 		"ALTER TABLE sessions ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN parent TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sessions ADD COLUMN last_interacted TIMESTAMP",
 	} {
 		db.Exec(m) //nolint:errcheck
 	}
@@ -245,6 +246,43 @@ func (s *Store) LoadAllPRs() (map[string]string, error) {
 			return nil, err
 		}
 		result[name] = prURL
+	}
+	return result, rows.Err()
+}
+
+// SaveInteraction records an interaction timestamp for a session.
+func (s *Store) SaveInteraction(name string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (name, last_interacted, updated_at)
+		VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(name) DO UPDATE SET
+			last_interacted = CURRENT_TIMESTAMP,
+			updated_at = CURRENT_TIMESTAMP
+	`, name)
+	return err
+}
+
+// LoadAllInteractions returns a map of session name -> last interaction time.
+func (s *Store) LoadAllInteractions() (map[string]time.Time, error) {
+	rows, err := s.db.Query("SELECT name, last_interacted FROM sessions WHERE last_interacted IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]time.Time)
+	for rows.Next() {
+		var name, ts string
+		if err := rows.Scan(&name, &ts); err != nil {
+			return nil, err
+		}
+		// The Go SQLite driver returns ISO 8601 (2006-01-02T15:04:05Z),
+		// while the sqlite3 CLI shows space-separated format.
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			result[name] = t
+		} else if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
+			result[name] = t
+		}
 	}
 	return result, rows.Err()
 }

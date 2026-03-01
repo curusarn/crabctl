@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/simon/crabctl/internal/session"
+	"github.com/simon/crabctl/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +25,13 @@ var sendCmd = &cobra.Command{
 
 		if err := exec.SendKeys(fullName, text); err != nil {
 			return fmt.Errorf("failed to send: %w", err)
+		}
+
+		// Record interaction time
+		if store, err := state.Open(); err == nil {
+			key := session.SessionKey(host, fullName)
+			_ = store.SaveInteraction(key)
+			store.Close()
 		}
 
 		fmt.Printf("Sent to %q: %s\n", args[0], text)

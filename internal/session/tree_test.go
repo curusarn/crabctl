@@ -10,7 +10,7 @@ func TestBuildTreeNoParents(t *testing.T) {
 		{Name: "a", FullName: "crab-a", Status: Running, Duration: 1 * time.Minute},
 		{Name: "b", FullName: "crab-b", Status: Waiting, Duration: 2 * time.Minute},
 	}
-	result := BuildTree(sessions, nil, nil)
+	result := BuildTree(sessions, nil, nil, nil)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 sessions, got %d", len(result))
 	}
@@ -33,7 +33,7 @@ func TestBuildTreeWithParent(t *testing.T) {
 		"crab-w1": "crab-orch",
 		"crab-w2": "crab-orch",
 	}
-	result := BuildTree(sessions, parents, nil)
+	result := BuildTree(sessions, parents, nil, nil)
 	// Filter visible
 	visible := filterVisible(result)
 	if len(visible) != 3 {
@@ -67,7 +67,7 @@ func TestBuildTreeVirtualParent(t *testing.T) {
 	parents := map[string]string{
 		"crab-w1": "simon", // parent "simon" doesn't exist as a session
 	}
-	result := BuildTree(sessions, parents, nil)
+	result := BuildTree(sessions, parents, nil, nil)
 	visible := filterVisible(result)
 	if len(visible) != 3 {
 		t.Fatalf("expected 3 visible (1 virtual + 1 child + 1 orphan), got %d", len(visible))
@@ -105,7 +105,7 @@ func TestBuildTreeGrandchildren(t *testing.T) {
 		"crab-mid":  "crab-orch",
 		"crab-leaf": "crab-mid",
 	}
-	result := BuildTree(sessions, parents, nil)
+	result := BuildTree(sessions, parents, nil, nil)
 	visible := filterVisible(result)
 	if len(visible) != 3 {
 		t.Fatalf("expected 3 visible sessions, got %d", len(visible))
@@ -134,7 +134,7 @@ func TestBuildTreeRemoteParent(t *testing.T) {
 	parents := map[string]string{
 		"bay1:user-w1": "crab-orch",
 	}
-	result := BuildTree(sessions, parents, nil)
+	result := BuildTree(sessions, parents, nil, nil)
 	visible := filterVisible(result)
 	if len(visible) != 2 {
 		t.Fatalf("expected 2 visible sessions, got %d", len(visible))
@@ -160,7 +160,7 @@ func TestBuildTreeFoldClosed(t *testing.T) {
 	foldState := map[string]int{
 		"crab-orch": FoldClosed,
 	}
-	result := BuildTree(sessions, parents, foldState)
+	result := BuildTree(sessions, parents, foldState, nil)
 	visible := filterVisible(result)
 	if len(visible) != 1 {
 		t.Fatalf("expected 1 visible session (parent only), got %d", len(visible))
@@ -178,10 +178,9 @@ func TestBuildTreeFoldClosed(t *testing.T) {
 	}
 }
 
-func TestBuildTreeFoldFull(t *testing.T) {
+func TestBuildTreeDefaultShowsAll(t *testing.T) {
 	// 4-level deep tree: orch → mid → sub → leaf
-	// Default fold shows 2 levels, so sub and leaf hidden.
-	// FoldFull on orch shows all.
+	// Default (FoldOpen) shows all descendants.
 	sessions := []Session{
 		{Name: "orch", FullName: "crab-orch", Status: Waiting, Duration: 10 * time.Minute},
 		{Name: "mid", FullName: "crab-mid", Status: Running, Duration: 5 * time.Minute},
@@ -194,40 +193,28 @@ func TestBuildTreeFoldFull(t *testing.T) {
 		"crab-leaf": "crab-sub",
 	}
 
-	// Default: orch shows 2 levels (mid, sub visible; leaf hidden)
-	result := BuildTree(sessions, parents, nil)
+	result := BuildTree(sessions, parents, nil, nil)
 	visible := filterVisible(result)
-	if len(visible) != 3 {
-		t.Fatalf("default: expected 3 visible, got %d", len(visible))
-	}
-	// sub should show 1 hidden descendant (leaf)
-	if visible[2].FullName != "crab-sub" {
-		t.Errorf("default: expected sub at index 2, got %q", visible[2].FullName)
-	}
-	if visible[2].HiddenCount != 1 {
-		t.Errorf("default: expected sub hidden count 1, got %d", visible[2].HiddenCount)
-	}
-
-	// FoldFull: all 4 visible
-	foldState := map[string]int{
-		"crab-orch": FoldFull,
-	}
-	result = BuildTree(sessions, parents, foldState)
-	visible = filterVisible(result)
 	if len(visible) != 4 {
-		t.Fatalf("fold full: expected 4 visible, got %d", len(visible))
+		t.Fatalf("expected 4 visible (all descendants), got %d", len(visible))
 	}
 	if visible[3].FullName != "crab-leaf" {
-		t.Errorf("fold full: expected leaf at index 3, got %q", visible[3].FullName)
+		t.Errorf("expected leaf at index 3, got %q", visible[3].FullName)
 	}
 	if visible[3].TreeDepth != 3 {
-		t.Errorf("fold full: expected leaf depth 3, got %d", visible[3].TreeDepth)
+		t.Errorf("expected leaf depth 3, got %d", visible[3].TreeDepth)
+	}
+	// No hidden counts when everything is visible
+	for i, v := range visible {
+		if v.HiddenCount != 0 {
+			t.Errorf("visible[%d] (%s): expected HiddenCount 0, got %d", i, v.FullName, v.HiddenCount)
+		}
 	}
 }
 
 func TestBuildTreeDeepTree(t *testing.T) {
 	// 6-level deep tree: root → l1 → l2 → l3 → l4 → l5
-	// MaxTreeDepth = 5, so FoldFull can show up to depth 5
+	// MaxTreeDepth = 5, so l5 at depth 5 is the deepest visible
 	sessions := []Session{
 		{Name: "root", FullName: "crab-root", Status: Waiting, Duration: 10 * time.Minute},
 		{Name: "l1", FullName: "crab-l1", Status: Running, Duration: 9 * time.Minute},
@@ -244,11 +231,8 @@ func TestBuildTreeDeepTree(t *testing.T) {
 		"crab-l5": "crab-l4",
 	}
 
-	// FoldFull: shows up to MaxTreeDepth (5), so l5 at depth 5 is visible
-	foldState := map[string]int{
-		"crab-root": FoldFull,
-	}
-	result := BuildTree(sessions, parents, foldState)
+	// Default (FoldOpen) shows up to MaxTreeDepth (5)
+	result := BuildTree(sessions, parents, nil, nil)
 	visible := filterVisible(result)
 	if len(visible) != 6 {
 		t.Fatalf("expected 6 visible (all levels), got %d", len(visible))
@@ -281,7 +265,7 @@ func TestBuildTreeNestedFold(t *testing.T) {
 	foldState := map[string]int{
 		"crab-mid": FoldClosed,
 	}
-	result := BuildTree(sessions, parents, foldState)
+	result := BuildTree(sessions, parents, foldState, nil)
 	visible := filterVisible(result)
 	if len(visible) != 3 {
 		t.Fatalf("expected 3 visible (orch, mid, w2), got %d", len(visible))
@@ -319,14 +303,14 @@ func TestBuildTreeHiddenPreserved(t *testing.T) {
 	foldState := map[string]int{
 		"crab-orch": FoldClosed,
 	}
-	result := BuildTree(sessions, parents, foldState)
+	result := BuildTree(sessions, parents, foldState, nil)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 total sessions, got %d", len(result))
 	}
 
 	// Now unfold — rebuild from previous result
 	delete(foldState, "crab-orch")
-	result2 := BuildTree(result, parents, foldState)
+	result2 := BuildTree(result, parents, foldState, nil)
 	visible := filterVisible(result2)
 	if len(visible) != 2 {
 		t.Fatalf("expected 2 visible after unfold, got %d", len(visible))
@@ -350,7 +334,7 @@ func TestBuildTreeGrandchildPrefix(t *testing.T) {
 		"crab-w2":   "crab-orch",
 		"crab-leaf": "crab-mid",
 	}
-	result := BuildTree(sessions, parents, nil)
+	result := BuildTree(sessions, parents, nil, nil)
 	visible := filterVisible(result)
 	if len(visible) != 4 {
 		t.Fatalf("expected 4 visible, got %d", len(visible))
@@ -411,6 +395,71 @@ func filterHidden(sessions []Session) []Session {
 		}
 	}
 	return out
+}
+
+func TestBuildTreeInteractionSort(t *testing.T) {
+	// Three root sessions: c is waiting (low priority), a and b are running.
+	// c was interacted with most recently, so it should sort first.
+	now := time.Now()
+	sessions := []Session{
+		{Name: "a", FullName: "crab-a", Status: Running, Duration: 5 * time.Minute},
+		{Name: "b", FullName: "crab-b", Status: Running, Duration: 3 * time.Minute},
+		{Name: "c", FullName: "crab-c", Status: Waiting, Duration: 10 * time.Minute},
+	}
+	lastInteracted := map[string]time.Time{
+		"crab-c": now,
+		"crab-a": now.Add(-1 * time.Minute),
+	}
+	result := BuildTree(sessions, nil, nil, lastInteracted)
+	visible := filterVisible(result)
+	if len(visible) != 3 {
+		t.Fatalf("expected 3 visible, got %d", len(visible))
+	}
+	// c (most recent interaction) should be first despite being "waiting"
+	if visible[0].FullName != "crab-c" {
+		t.Errorf("expected crab-c first (most recent interaction), got %q", visible[0].FullName)
+	}
+	// a (older interaction) second
+	if visible[1].FullName != "crab-a" {
+		t.Errorf("expected crab-a second (older interaction), got %q", visible[1].FullName)
+	}
+	// b (no interaction) last
+	if visible[2].FullName != "crab-b" {
+		t.Errorf("expected crab-b last (no interaction), got %q", visible[2].FullName)
+	}
+}
+
+func TestBuildTreeInteractionPropagatesUp(t *testing.T) {
+	// Parent orch has two children. Child w1 was interacted with.
+	// A separate root session "other" has no interaction.
+	// orch's group should sort before "other" due to child interaction propagating up.
+	now := time.Now()
+	sessions := []Session{
+		{Name: "other", FullName: "crab-other", Status: Running, Duration: 1 * time.Minute},
+		{Name: "orch", FullName: "crab-orch", Status: Waiting, Duration: 10 * time.Minute},
+		{Name: "w1", FullName: "crab-w1", Status: Running, Duration: 5 * time.Minute},
+	}
+	parents := map[string]string{
+		"crab-w1": "crab-orch",
+	}
+	lastInteracted := map[string]time.Time{
+		"crab-w1": now,
+	}
+	result := BuildTree(sessions, parents, nil, lastInteracted)
+	visible := filterVisible(result)
+	if len(visible) != 3 {
+		t.Fatalf("expected 3 visible, got %d", len(visible))
+	}
+	// orch should be first (child interaction propagates)
+	if visible[0].FullName != "crab-orch" {
+		t.Errorf("expected crab-orch first (child interaction propagates), got %q", visible[0].FullName)
+	}
+	if visible[1].FullName != "crab-w1" {
+		t.Errorf("expected crab-w1 as child, got %q", visible[1].FullName)
+	}
+	if visible[2].FullName != "crab-other" {
+		t.Errorf("expected crab-other last (no interaction), got %q", visible[2].FullName)
+	}
 }
 
 func repeat(s string, n int) string {
