@@ -122,7 +122,13 @@ func listSessionsWithPrefix(prefix string) ([]SessionInfo, error) {
 		return nil, nil
 	}
 
-	return parseSessionList(out, prefix), nil
+	sessions := parseSessionList(out, prefix)
+	for i := range sessions {
+		if p := GetSessionEnv(sessions[i].FullName, "CRABCTL_PARENT"); p != "" {
+			sessions[i].Parent = p
+		}
+	}
+	return sessions, nil
 }
 
 // parseSessionList parses tmux list-sessions output into SessionInfo structs.

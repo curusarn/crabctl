@@ -174,6 +174,7 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 			AttachedCount: info.AttachedCount,
 			WorkDir:       workDir,
 			PaneContent:   output,
+			Parent:        info.Parent,
 		})
 	}
 	return sessions, nil

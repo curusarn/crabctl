@@ -55,7 +55,46 @@ func (s *SSHExecutor) ListSessions() ([]SessionInfo, error) {
 		}
 		return nil, err // SSH connection failure
 	}
-	return parseSessionList(out, s.Prefix), nil
+	sessions := parseSessionList(out, s.Prefix)
+	if len(sessions) > 0 {
+		s.fetchParents(sessions)
+	}
+	return sessions, nil
+}
+
+// fetchParents batch-fetches CRABCTL_PARENT for all sessions in a single SSH call.
+func (s *SSHExecutor) fetchParents(sessions []SessionInfo) {
+	// Build a shell loop that prints "fullName|CRABCTL_PARENT=value" for each session
+	var names []string
+	for _, sess := range sessions {
+		names = append(names, shellQuote(sess.FullName))
+	}
+	cmd := fmt.Sprintf("for s in %s; do printf '%%s|%%s\\n' \"$s\" \"$(tmux show-env -t \"$s\" CRABCTL_PARENT 2>/dev/null)\"; done",
+		strings.Join(names, " "))
+	out, err := s.run(cmd)
+	if err != nil {
+		return
+	}
+	// Parse output: "crab-foo|CRABCTL_PARENT=crab-bar"
+	parentMap := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		// parts[1] is "CRABCTL_PARENT=value"
+		if idx := strings.Index(parts[1], "="); idx >= 0 {
+			parentMap[parts[0]] = parts[1][idx+1:]
+		}
+	}
+	for i := range sessions {
+		if p, ok := parentMap[sessions[i].FullName]; ok {
+			sessions[i].Parent = p
+		}
+	}
 }
 
 func (s *SSHExecutor) CapturePaneOutput(fullName string, lines int) (string, error) {

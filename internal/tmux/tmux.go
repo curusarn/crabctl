@@ -18,6 +18,7 @@ type SessionInfo struct {
 	FullName      string // with crab- prefix
 	AttachedCount int
 	Created       time.Time
+	Parent        string // from CRABCTL_PARENT env var
 }
 
 // FindTmux locates the tmux binary.

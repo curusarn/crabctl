@@ -433,6 +433,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Carry forward already-resolved session state (UUIDs, PR URLs)
 		m.mergeSessionState(msg)
+		// Auto-persist parents discovered from tmux env (CRABCTL_PARENT)
+		m.persistDiscoveredParents(msg)
 		// Local sessions replace only local entries, preserve remote
 		remote := filterByHost(m.sessions, true)
 		local := filterByHost(m.sessions, false)
@@ -505,6 +507,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessions = append(kept, msg.Sessions...)
+		// Auto-persist parents discovered from tmux env (CRABCTL_PARENT)
+		m.persistDiscoveredParents(msg.Sessions)
 		m.sessions = session.BuildTree(m.sessions, m.parents, m.foldState, m.lastInteracted)
 		prevFocus := m.focusedSessionName()
 		m.applyFilter()
@@ -1062,6 +1066,23 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 		}
 
 		s.PaneContent = "" // no longer needed after UUID resolution
+	}
+}
+
+// persistDiscoveredParents saves parent relationships discovered from tmux
+// env vars (CRABCTL_PARENT) to the in-memory map and DB on first discovery.
+func (m *Model) persistDiscoveredParents(sessions []session.Session) {
+	for _, s := range sessions {
+		if s.Parent == "" {
+			continue
+		}
+		key := session.SessionKey(s.Host, s.FullName)
+		if m.parents[key] == "" {
+			m.parents[key] = s.Parent
+			if m.store != nil {
+				m.store.SaveParent(key, s.Parent)
+			}
+		}
 	}
 }
 
