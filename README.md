@@ -4,6 +4,8 @@
 
 Manage Claude Code sessions in tmux.
 
+<img width="2478" height="1238" alt="CleanShot 2026-03-01 at 15 35 16@2x" src="https://github.com/user-attachments/assets/986b2505-fb29-4380-85f2-e90d3be0c390" />
+
 ## Install
 
 ```bash
