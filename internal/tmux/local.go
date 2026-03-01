@@ -24,8 +24,8 @@ func (l *LocalExecutor) CapturePaneOutput(fullName string, lines int) (string, e
 	return CapturePaneOutput(fullName, lines)
 }
 
-func (l *LocalExecutor) NewSession(name, workDir string, claudeArgs []string) error {
-	return NewSession(name, workDir, claudeArgs)
+func (l *LocalExecutor) NewSession(name, workDir string, claudeArgs []string, parent string) error {
+	return NewSession(name, workDir, claudeArgs, parent)
 }
 
 func (l *LocalExecutor) SendKeys(fullName, text string) error {

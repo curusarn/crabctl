@@ -67,6 +67,7 @@ func Open() (*Store, error) {
 		"ALTER TABLE sessions ADD COLUMN first_msg TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN killed_at TIMESTAMP",
 		"ALTER TABLE sessions ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sessions ADD COLUMN parent TEXT NOT NULL DEFAULT ''",
 	} {
 		db.Exec(m) //nolint:errcheck
 	}
@@ -182,6 +183,37 @@ func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 		ps.Killed = killed == 1
 		ps.LastSeen, _ = time.Parse("2006-01-02 15:04:05", lastSeen)
 		result = append(result, ps)
+	}
+	return result, rows.Err()
+}
+
+// SaveParent persists the parent session key for a session.
+func (s *Store) SaveParent(name, parent string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO sessions (name, parent, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(name) DO UPDATE SET
+			parent = excluded.parent,
+			updated_at = CURRENT_TIMESTAMP
+	`, name, parent)
+	return err
+}
+
+// LoadAllParents returns a map of session name -> parent key for all sessions with a parent.
+func (s *Store) LoadAllParents() (map[string]string, error) {
+	rows, err := s.db.Query("SELECT name, parent FROM sessions WHERE parent != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var name, parent string
+		if err := rows.Scan(&name, &parent); err != nil {
+			return nil, err
+		}
+		result[name] = parent
 	}
 	return result, rows.Err()
 }

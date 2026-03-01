@@ -40,12 +40,18 @@ Then restart your shell or run `source ~/.zshrc`.
 
 ## Tips
 
-### Enable mouse scrolling in tmux
+### Recommended tmux config
 
-By default tmux doesn't pass mouse scroll events to the terminal. To enable scrolling with the mouse, add this to `~/.tmux.conf`:
+Add this to `~/.tmux.conf`:
 
 ```
 set -g mouse on
+
+# Prevent scrolling from initiating copy mode in tmux.
+unbind -T root WheelUpPane
+bind -T root WheelUpPane if -F '#{pane_in_mode}' 'send -X scroll-up' ''
+unbind -T root WheelDownPane
+bind -T root WheelDownPane if -F '#{pane_in_mode}' 'send -X scroll-down' ''
 ```
 
 Then reload the config in any running tmux sessions:

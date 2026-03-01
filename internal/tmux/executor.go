@@ -6,7 +6,7 @@ type Executor interface {
 	SessionPrefix() string
 	ListSessions() ([]SessionInfo, error)
 	CapturePaneOutput(fullName string, lines int) (string, error)
-	NewSession(name, workDir string, claudeArgs []string) error
+	NewSession(name, workDir string, claudeArgs []string, parent string) error
 	SendKeys(fullName, text string) error
 	KillSession(fullName string) error
 	HasSession(fullName string) bool

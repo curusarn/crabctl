@@ -144,7 +144,7 @@ func containsAny(codes []string, targets ...string) bool {
 }
 
 // NewSession creates a new detached tmux session running claude.
-func NewSession(name, workDir string, claudeArgs []string) error {
+func NewSession(name, workDir string, claudeArgs []string, parent string) error {
 	tmux, err := FindTmux()
 	if err != nil {
 		return err
@@ -152,6 +152,8 @@ func NewSession(name, workDir string, claudeArgs []string) error {
 
 	fullName := SessionPrefix + name
 	args := []string{"new-session", "-d", "-s", fullName}
+	// Set CRABCTL_NAME so the child session knows its own identity
+	args = append(args, "-e", "CRABCTL_NAME="+fullName)
 	if workDir != "" {
 		args = append(args, "-c", workDir)
 	}
@@ -174,6 +176,13 @@ func NewSession(name, workDir string, claudeArgs []string) error {
 	if len(claudeArgs) > 0 {
 		setEnv := exec.Command(tmux, "set-environment", "-t", fullName,
 			"CRABCTL_FLAGS", strings.Join(claudeArgs, " "))
+		_ = setEnv.Run()
+	}
+
+	// Store parent reference as tmux session environment variable
+	if parent != "" {
+		setEnv := exec.Command(tmux, "set-environment", "-t", fullName,
+			"CRABCTL_PARENT", parent)
 		_ = setEnv.Run()
 	}
 

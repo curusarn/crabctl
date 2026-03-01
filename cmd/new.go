@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/simon/crabctl/internal/session"
+	"github.com/simon/crabctl/internal/state"
 	"github.com/simon/crabctl/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -43,14 +44,30 @@ var newCmd = &cobra.Command{
 			message = strings.Join(args[1:], " ")
 		}
 
+		// Detect parent session
+		parentFlag, _ := cmd.Flags().GetString("parent")
+		parent := tmux.DetectParent(parentFlag)
+
 		var claudeArgs []string
 		claudeArgs = append(claudeArgs, "--dangerously-skip-permissions")
 
-		if err := exec.NewSession(name, dir, claudeArgs); err != nil {
+		if err := exec.NewSession(name, dir, claudeArgs, parent); err != nil {
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
+		// Save parent relationship to DB
+		if parent != "" {
+			sessionKey := session.SessionKey(host, fullName)
+			if store, err := state.Open(); err == nil {
+				defer store.Close()
+				store.SaveParent(sessionKey, parent)
+			}
+		}
+
 		fmt.Printf("Created session %q\n", args[0])
+		if parent != "" {
+			fmt.Printf("Parent: %s\n", parent)
+		}
 
 		if message != "" {
 			if err := waitForPrompt(exec, fullName); err != nil {
@@ -124,5 +141,6 @@ func init() {
 	newCmd.Flags().StringP("dir", "c", "", "Working directory for the session")
 	newCmd.Flags().StringP("message", "m", "", "Message to send once Claude is ready")
 	newCmd.Flags().BoolP("attach", "a", false, "Attach to the session immediately")
+	newCmd.Flags().StringP("parent", "p", "", "Parent session name (auto-detected if not set)")
 	rootCmd.AddCommand(newCmd)
 }

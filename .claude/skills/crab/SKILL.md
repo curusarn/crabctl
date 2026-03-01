@@ -10,7 +10,15 @@ Quick status check and control of all running crab-* tmux sessions.
 
 ## Steps
 
-### 1. List all crab sessions
+### 1. Check your own identity
+
+Before listing sessions, determine who you are:
+```bash
+tmux display-message -p '#{session_name}' 2>/dev/null || echo "${CRABCTL_NAME:-unknown}"
+```
+If your session name starts with `crab-`, you're running inside a crab session. Use this when reporting: "I am crab-orchestrator, managing N children."
+
+### 2. List all crab sessions
 
 **Local sessions:**
 ```bash
@@ -25,7 +33,7 @@ Remote sessions use a different prefix (typically `$USER-` or `$WORKBENCH_USER-`
 
 If no local or remote sessions found, report that and stop.
 
-### 2. Capture output from each session
+### 3. Capture output from each session
 
 **ALWAYS use `crabctl capture`** instead of raw `tmux capture-pane`. It automatically strips Claude Code's autocomplete ghost text (dim/bright-black ANSI styling) and all ANSI codes, giving you clean output safe for analysis.
 
@@ -46,7 +54,7 @@ tmux capture-pane -t SESSION_NAME -p -S -30
 ```
 Note: Raw tmux output will contain ghost text and ANSI codes that corrupt status detection and analysis.
 
-### 3. Analyze and summarize
+### 4. Analyze and summarize
 
 For each session, determine its state by reading the captured output:
 
@@ -56,27 +64,29 @@ For each session, determine its state by reading the captured output:
 - **Errored**: Error messages, stack traces, or "Error:" visible
 - **Typing prompt**: Session is at `❯` with user input waiting to be submitted
 
-Present a concise table:
+Show parent-child relationships using tree structure when sessions were launched by you:
 
 ```
 Session              Status      What it's doing
-crab-debugger        running     Writing .github/workflows/release.yml
-crab-project-a       idle        Finished fixing goreleaser config
-simon-calm-elk (R)   running     Cleaning up workbench CLI output
+orchestrator         waiting     Monitoring workers
+├── worker-1         running     Writing release.yml
+├── worker-2         running     Fixing goreleaser
+└── worker-3         idle        Finished task
+standalone           running     Independent work
 ```
 
-Mark remote sessions with `(R)` or `(remote)` in the table.
+Sessions you launched are your children. Identify them by checking if YOU created them during this conversation. Mark remote sessions with `(R)` or `(remote)`.
 
 Include the last meaningful action (most recent `⏺` line) for context.
 
-### 4. Offer actions
+### 6. Offer actions
 
 After showing the summary, ask the user if they want to:
 - Send instructions to a specific session
 - Check detailed output from a session
 - Just wanted the status (done)
 
-### 5. Sending messages
+### 7. Sending messages
 
 When sending a message to a crab session, ALWAYS use two SEPARATE Bash tool calls:
 
@@ -114,15 +124,17 @@ When composing instructions for a crab:
 - Be specific about what to do and what NOT to do
 - If the crab is idle at the prompt, your message becomes its next task
 
-### 6. Creating new crab sessions
+### 8. Creating new crab sessions
 
 Use `crabctl new` — it handles CLAUDECODE env var, trust prompt bypass, and session prefix automatically.
+
+**Parent-child tracking is automatic.** When you create a session from within a crab tmux session, `crabctl new` detects your session name as the parent. No extra flags needed.
 
 **Preferred: create and send message in one command:**
 
 ```bash
-bin/crabctl new NAME your task message here
-bin/crabctl new NAME --dir /path/to/repo -m 'your task message'
+crabctl new NAME your task message here
+crabctl new NAME --dir /path/to/repo -m 'your task message'
 ```
 
 This creates `crab-NAME`, waits for Claude's `❯` prompt (polls every 500ms, 30s timeout), then sends the message automatically. No manual waiting needed.
@@ -130,11 +142,22 @@ This creates `crab-NAME`, waits for Claude's `❯` prompt (polls every 500ms, 30
 **Without a message (just create):**
 
 ```bash
-bin/crabctl new NAME
-bin/crabctl new NAME --dir /path/to/repo
+crabctl new NAME
+crabctl new NAME --dir /path/to/repo
 ```
 
-### 7. Status detection details
+**Explicit parent (if auto-detection doesn't work):**
+
+```bash
+crabctl new NAME --parent MY_SESSION_NAME -m 'your task message'
+```
+
+If running outside a crab tmux session (e.g. direct terminal), set `CRABCTL_NAME` env var first:
+```bash
+export CRABCTL_NAME=orchestrator
+```
+
+### 9. Status detection details
 
 Claude Code's pane output has specific patterns. Scan bottom-up, skipping empty lines and decoration:
 
@@ -152,7 +175,7 @@ Claude Code's pane output has specific patterns. Scan bottom-up, skipping empty 
 
 **Ghost text:** Claude Code renders autocomplete suggestions as dim/bright-black ANSI text. Always use `crabctl capture` which strips this automatically. Raw `tmux capture-pane` will include ghost text that corrupts status detection and confuses analysis.
 
-### 8. Multi-crab coordination
+### 10. Multi-crab coordination
 
 When orchestrating multiple crabs working on the same repo:
 
