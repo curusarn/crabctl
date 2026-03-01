@@ -4,7 +4,7 @@
 
 Manage Claude Code sessions in tmux.
 
-<img width="2478" height="1238" alt="CleanShot 2026-03-01 at 15 35 16@2x" src="https://github.com/user-attachments/assets/986b2505-fb29-4380-85f2-e90d3be0c390" />
+<img width="2478" height="1238" alt="crabctl screenshot" src="https://github.com/user-attachments/assets/17f502dd-c80b-47b8-a2de-813e72c31134" />
 
 ## Install
 
