@@ -264,28 +264,33 @@ func FindSessionUUID(workDir string, sessionStart time.Time, paneContent string,
 		return "", ""
 	}
 
-	// Strategy 1: Content matching — check if recent messages from each
-	// session file appear in the tmux pane output. Most reliable because
-	// it directly verifies which conversation is on screen.
+	// Strategy 1: Content matching — check if recent messages and tool calls
+	// from each session file appear in the tmux pane output.
+	// Tool calls (e.g. "Write(/path/to/file)") persist on screen much longer
+	// than user messages and are highly specific to each session.
 	if paneContent != "" && len(candidates) > 1 {
 		var bestMatch *candidate
 		bestScore := 0
 		for i := range candidates {
 			c := &candidates[i]
 			path := filepath.Join(projectDir, c.uuid+".jsonl")
-			snippets := readLastUserMessages(path, 3)
 			score := 0
-			for _, s := range snippets {
+			for _, s := range readLastUserMessages(path, 3) {
 				if strings.Contains(paneContent, s) {
 					score++
 				}
 			}
-			if score > bestScore {
+			for _, s := range readLastToolCalls(path, 5) {
+				if strings.Contains(paneContent, s) {
+					score += 2 // tool calls are more specific, weight higher
+				}
+			}
+			if score > bestScore || (score == bestScore && score > 0 && bestMatch != nil && c.modTime.After(bestMatch.modTime)) {
 				bestScore = score
 				bestMatch = c
 			}
 		}
-		if bestMatch != nil && bestScore > 0 {
+		if bestMatch != nil && bestScore >= 3 {
 			return bestMatch.uuid, bestMatch.firstMsg
 		}
 	}
@@ -385,6 +390,70 @@ func readLastUserMessages(path string, n int) []string {
 		msgs = msgs[len(msgs)-n:]
 	}
 	return msgs
+}
+
+// readLastToolCalls reads the last n tool call descriptions from a JSONL
+// session file. These are highly specific (file paths, commands) and persist
+// on the pane much longer than user messages.
+func readLastToolCalls(path string, n int) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	var calls []string
+	for scanner.Scan() {
+		var msg struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue
+		}
+		if msg.Type != "assistant" {
+			continue
+		}
+		// Extract tool_use blocks which contain unique identifiers
+		var blocks []struct {
+			Type  string          `json:"type"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(msg.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type != "tool_use" || b.Name == "" {
+				continue
+			}
+			// Extract file_path or command from input for matching
+			var input map[string]interface{}
+			if json.Unmarshal(b.Input, &input) != nil {
+				continue
+			}
+			// Build a snippet like "Write(path)" or "Bash(cmd)"
+			if fp, ok := input["file_path"].(string); ok {
+				calls = append(calls, b.Name+"("+fp+")")
+			} else if cmd, ok := input["command"].(string); ok {
+				snippet := cmd
+				if len(snippet) > 60 {
+					snippet = snippet[:60]
+				}
+				calls = append(calls, b.Name+"("+snippet+")")
+			}
+		}
+	}
+
+	if len(calls) > n {
+		calls = calls[len(calls)-n:]
+	}
+	return calls
 }
 
 // ReadSessionPreview reads a JSONL session file and returns a formatted

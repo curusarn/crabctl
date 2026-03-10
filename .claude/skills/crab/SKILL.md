@@ -126,6 +126,8 @@ When composing instructions for a crab:
 
 ### 8. Creating new crab sessions
 
+**NEVER reuse an existing session for an unrelated task.** Each crab session belongs to a single topic/task. If the user asks something unrelated to any running session, always create a new session. Reusing a session destroys context and prevents follow-up on the original task.
+
 Use `crabctl new` — it handles CLAUDECODE env var, trust prompt bypass, and session prefix automatically.
 
 **Parent-child tracking is automatic.** When you create a session from within a crab tmux session, `crabctl new` detects your session name as the parent. No extra flags needed.

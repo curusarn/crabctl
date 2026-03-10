@@ -16,13 +16,14 @@ import (
 
 var (
 	// Adaptive colors for light/dark terminal backgrounds
-	accentColor = lipgloss.AdaptiveColor{Light: "#D6249F", Dark: "#FF79C6"}
-	greenColor  = lipgloss.AdaptiveColor{Light: "#116620", Dark: "#50FA7B"}
-	yellowColor = lipgloss.AdaptiveColor{Light: "#7D5A00", Dark: "#F1FA8C"}
-	redColor    = lipgloss.AdaptiveColor{Light: "#B31D28", Dark: "#FF5555"}
-	dimColor    = lipgloss.AdaptiveColor{Light: "#777777", Dark: "#6272A4"}
-	hlBgColor   = lipgloss.AdaptiveColor{Light: "#E8E8E8", Dark: "#333333"}
-	cyanColor   = lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#8BE9FD"}
+	accentColor  = lipgloss.AdaptiveColor{Light: "#D6249F", Dark: "#FF79C6"}
+	greenColor   = lipgloss.AdaptiveColor{Light: "#116620", Dark: "#50FA7B"}
+	yellowColor  = lipgloss.AdaptiveColor{Light: "#7D5A00", Dark: "#F1FA8C"}
+	redColor     = lipgloss.AdaptiveColor{Light: "#B31D28", Dark: "#FF5555"}
+	purpleColor  = lipgloss.AdaptiveColor{Light: "#6F42C1", Dark: "#BD93F9"}
+	dimColor     = lipgloss.AdaptiveColor{Light: "#777777", Dark: "#6272A4"}
+	hlBgColor    = lipgloss.AdaptiveColor{Light: "#E8E8E8", Dark: "#333333"}
+	cyanColor    = lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#8BE9FD"}
 
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -683,7 +684,18 @@ func renderChanges(s session.Session) string {
 		parts = append(parts, actionStyle.Render(s.GitChanges))
 	}
 	if s.PR != "" {
-		pr := modeStyle.Render(s.PR)
+		prStyle := modeStyle // default: cyan
+		switch s.PRState {
+		case "draft":
+			prStyle = lipgloss.NewStyle().Foreground(dimColor)
+		case "merged":
+			prStyle = lipgloss.NewStyle().Foreground(purpleColor)
+		case "closed":
+			prStyle = lipgloss.NewStyle().Foreground(redColor)
+		case "open":
+			prStyle = lipgloss.NewStyle().Foreground(greenColor)
+		}
+		pr := prStyle.Render(s.PR)
 		if s.PRURL != "" {
 			pr = ansi.SetHyperlink(s.PRURL) + pr + ansi.ResetHyperlink()
 		}

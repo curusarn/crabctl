@@ -116,6 +116,26 @@ func (s *Store) LoadAllAutoForward() (map[string]bool, error) {
 	return result, rows.Err()
 }
 
+// LoadAllSessionUUIDs returns a map of session name -> (uuid, workDir, firstMsg)
+// for all sessions with a stored UUID.
+func (s *Store) LoadAllSessionUUIDs() (map[string][3]string, error) {
+	rows, err := s.db.Query("SELECT name, session_file, work_dir, first_msg FROM sessions WHERE session_file != ''")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][3]string)
+	for rows.Next() {
+		var name, uuid, workDir, firstMsg string
+		if err := rows.Scan(&name, &uuid, &workDir, &firstMsg); err != nil {
+			return nil, err
+		}
+		result[name] = [3]string{uuid, workDir, firstMsg}
+	}
+	return result, rows.Err()
+}
+
 // SaveSessionUUID persists the Claude session UUID for an active session.
 // Called when a UUID is first resolved so it survives accidental kills.
 func (s *Store) SaveSessionUUID(name, sessionUUID, workDir, firstMsg string) error {
@@ -177,10 +197,12 @@ func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 	for rows.Next() {
 		var ps PastSession
 		var killed int
-		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &killed, &ps.LastSeen); err != nil {
+		var lastSeen string // COALESCE returns untyped string — can't scan into time.Time
+		if err := rows.Scan(&ps.Name, &ps.SessionUUID, &ps.WorkDir, &ps.FirstMsg, &killed, &lastSeen); err != nil {
 			return nil, err
 		}
 		ps.Killed = killed == 1
+		ps.LastSeen = parseTimestamp(lastSeen)
 		result = append(result, ps)
 	}
 	return result, rows.Err()
@@ -278,4 +300,19 @@ func (s *Store) LoadAllInteractions() (map[string]time.Time, error) {
 		result[name] = t
 	}
 	return result, rows.Err()
+}
+
+// parseTimestamp parses SQLite timestamp strings from COALESCE/expressions
+// where the driver returns an untyped string instead of time.Time.
+func parseTimestamp(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
 }

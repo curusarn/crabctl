@@ -168,27 +168,27 @@ func (s *SSHExecutor) GetPanePath(fullName string) string {
 	return strings.TrimSpace(out)
 }
 
-func (s *SSHExecutor) GetBranchPR(workDir string) (string, string) {
+func (s *SSHExecutor) GetBranchPR(workDir string) (string, string, string) {
 	// Source .envrc from workDir for credentials (GH_TOKEN), then run gh in the target dir
 	envSetup := fmt.Sprintf("cd %s && [ -f .envrc ] && . .envrc >/dev/null 2>&1;", shellQuote(workDir))
-	ghCmd := "gh pr view --json number,url --jq '\"PR #\\(.number) \\(.url)\"'"
+	ghCmd := "gh pr view --json number,url,state,isDraft --jq '\"PR #\\(.number) \\(.url) \\(.state) \\(.isDraft)\"'"
 
 	out, err := s.run(fmt.Sprintf("%s cd %s && %s", envSetup, shellQuote(workDir), ghCmd))
 	if err == nil {
-		if pr, prURL := ParsePROutput(strings.TrimSpace(out)); pr != "" {
-			return pr, prURL
+		if pr, prURL, prState := ParsePROutput(strings.TrimSpace(out)); pr != "" {
+			return pr, prURL, prState
 		}
 	}
 	// If workDir is not a git repo or has no PR, scan subdirs
 	for _, sub := range s.findGitSubdirs(workDir) {
 		out, err := s.run(fmt.Sprintf("%s cd %s && %s", envSetup, shellQuote(sub), ghCmd))
 		if err == nil {
-			if pr, prURL := ParsePROutput(strings.TrimSpace(out)); pr != "" {
-				return pr, prURL
+			if pr, prURL, prState := ParsePROutput(strings.TrimSpace(out)); pr != "" {
+				return pr, prURL, prState
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // findGitSubdirs returns immediate subdirectories containing .git via a single SSH call.
@@ -209,6 +209,14 @@ func (s *SSHExecutor) findGitSubdirs(dir string) []string {
 		}
 	}
 	return dirs
+}
+
+func (s *SSHExecutor) ReadHistoryTail(n int) (string, error) {
+	out, err := s.run(fmt.Sprintf("tail -n %d ~/.claude/history.jsonl 2>/dev/null", n))
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 func (s *SSHExecutor) AttachSession(fullName string) error {

@@ -44,27 +44,27 @@ func (l *LocalExecutor) GetPanePath(fullName string) string {
 	return GetPanePath(fullName)
 }
 
-func (l *LocalExecutor) GetBranchPR(workDir string) (string, string) {
-	pr, prURL := getBranchPRLocal(workDir)
+func (l *LocalExecutor) GetBranchPR(workDir string) (string, string, string) {
+	pr, prURL, prState := getBranchPRLocal(workDir)
 	if pr != "" {
-		return pr, prURL
+		return pr, prURL, prState
 	}
 	// If workDir is not a git repo, scan subdirs
 	for _, sub := range findGitSubdirs(workDir) {
-		pr, prURL = getBranchPRLocal(sub)
+		pr, prURL, prState = getBranchPRLocal(sub)
 		if pr != "" {
-			return pr, prURL
+			return pr, prURL, prState
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
-func getBranchPRLocal(dir string) (string, string) {
-	cmd := exec.Command("gh", "pr", "view", "--json", "number,url", "--jq", `"PR #\(.number) \(.url)"`)
+func getBranchPRLocal(dir string) (string, string, string) {
+	cmd := exec.Command("gh", "pr", "view", "--json", "number,url,state,isDraft", "--jq", `"PR #\(.number) \(.url) \(.state) \(.isDraft)"`)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	return ParsePROutput(strings.TrimSpace(string(out)))
 }
@@ -98,16 +98,38 @@ func (l *LocalExecutor) AttachSession(fullName string) error {
 	return RunAttachSession(fullName)
 }
 
-// ParsePROutput parses "PR #123 https://github.com/owner/repo/pull/123" into (pr, prURL).
-func ParsePROutput(line string) (string, string) {
+func (l *LocalExecutor) ReadHistoryTail(n int) (string, error) {
+	return ReadHistoryTail(n)
+}
+
+// ParsePROutput parses "PR #123 https://github.com/owner/repo/pull/123 OPEN false" into (pr, prURL, prState).
+// Also handles the legacy format without state/isDraft fields.
+func ParsePROutput(line string) (string, string, string) {
 	if !strings.HasPrefix(line, "PR #") {
-		return "", ""
+		return "", "", ""
 	}
-	parts := strings.SplitN(line, " ", 3)
-	if len(parts) != 3 {
-		return "", ""
+	parts := strings.SplitN(line, " ", 5)
+	if len(parts) < 3 {
+		return "", "", ""
 	}
-	return parts[0] + " " + parts[1], parts[2]
+	pr := parts[0] + " " + parts[1]
+	prURL := parts[2]
+	prState := "open" // default
+	if len(parts) >= 5 {
+		state := parts[3]  // "OPEN", "MERGED", "CLOSED"
+		isDraft := parts[4] // "true", "false"
+		switch {
+		case state == "OPEN" && isDraft == "true":
+			prState = "draft"
+		case state == "MERGED":
+			prState = "merged"
+		case state == "CLOSED":
+			prState = "closed"
+		default:
+			prState = "open"
+		}
+	}
+	return pr, prURL, prState
 }
 
 // listSessionsWithPrefix lists tmux sessions with the given prefix.

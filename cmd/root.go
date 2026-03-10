@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/simon/crabctl/internal/config"
+	"github.com/simon/crabctl/internal/session"
 	"github.com/simon/crabctl/internal/state"
 	"github.com/simon/crabctl/internal/tmux"
 	"github.com/simon/crabctl/internal/tui"
@@ -73,6 +74,10 @@ var rootCmd = &cobra.Command{
 			// Attach via the correct executor
 			exec := findExecutorByHost(executors, final.AttachHost)
 			_ = exec.AttachSession(final.AttachTarget)
+
+			// After detach: resolve session ID from history
+			resolveSessionIDFromHistory(exec, store, final.AttachHost, final.AttachTarget)
+
 			// Loop restarts TUI
 		}
 
@@ -87,6 +92,33 @@ func findExecutorByHost(executors []tmux.Executor, host string) tmux.Executor {
 		}
 	}
 	return &tmux.LocalExecutor{}
+}
+
+// resolveSessionIDFromHistory reads recent history.jsonl entries and persists
+// the session ID for the given tmux session. Matches by cross-referencing
+// history "display" entries against the pane content (what's on screen),
+// scoped to the session's project directory. Works even if the user attached
+// and detached without sending any new message — prior conversation messages
+// are still visible on the pane.
+func resolveSessionIDFromHistory(exec tmux.Executor, store *state.Store, host, fullName string) {
+	if store == nil {
+		return
+	}
+	historyContent, err := exec.ReadHistoryTail(100)
+	if err != nil || historyContent == "" {
+		return
+	}
+	paneContent, err := exec.CapturePaneOutput(fullName, 50)
+	if err != nil || paneContent == "" {
+		return
+	}
+	sessionID := session.FindSessionIDByPaneContent(historyContent, paneContent)
+	if sessionID == "" {
+		return
+	}
+	workDir := exec.GetPanePath(fullName)
+	key := session.SessionKey(host, fullName)
+	_ = store.SaveSessionUUID(key, sessionID, workDir, "")
 }
 
 func Execute() {

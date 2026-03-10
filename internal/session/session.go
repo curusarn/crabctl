@@ -48,6 +48,7 @@ type Session struct {
 	GitChanges      string // e.g. "5 files +415 -44"
 	PR              string // e.g. "PR #498"
 	PRURL           string // e.g. "https://github.com/owner/repo/pull/498"
+	PRState         string // "open", "draft", "merged", "closed"
 	Context         string // e.g. "10%" (context remaining)
 	Duration        time.Duration
 	LastActive      time.Time // most recent Claude session file mtime
@@ -66,8 +67,8 @@ type Session struct {
 
 // prCacheEntry holds a cached PR lookup result.
 type prCacheEntry struct {
-	PR, PRURL  string
-	ResolvedAt time.Time
+	PR, PRURL, PRState string
+	ResolvedAt         time.Time
 }
 
 var (
@@ -84,28 +85,28 @@ func ClearPRCache() {
 	prCacheMu.Unlock()
 }
 
-// ResolveBranchPR returns the PR text and URL for a session's branch via gh CLI.
+// ResolveBranchPR returns the PR text, URL, and state for a session's branch via gh CLI.
 // Results are cached for 5 minutes to avoid running gh on every tick.
-func ResolveBranchPR(host, fullName, workDir string, ex tmux.Executor) (string, string) {
+func ResolveBranchPR(host, fullName, workDir string, ex tmux.Executor) (string, string, string) {
 	if workDir == "" {
-		return "", ""
+		return "", "", ""
 	}
 	key := host + ":" + fullName
 
 	prCacheMu.Lock()
 	if entry, ok := prCache[key]; ok && time.Since(entry.ResolvedAt) < prCacheTTL {
 		prCacheMu.Unlock()
-		return entry.PR, entry.PRURL
+		return entry.PR, entry.PRURL, entry.PRState
 	}
 	prCacheMu.Unlock()
 
-	pr, prURL := ex.GetBranchPR(workDir)
+	pr, prURL, prState := ex.GetBranchPR(workDir)
 
 	prCacheMu.Lock()
-	prCache[key] = prCacheEntry{PR: pr, PRURL: prURL, ResolvedAt: time.Now()}
+	prCache[key] = prCacheEntry{PR: pr, PRURL: prURL, PRState: prState, ResolvedAt: time.Now()}
 	prCacheMu.Unlock()
 
-	return pr, prURL
+	return pr, prURL, prState
 }
 
 // WarmPRCache populates the PR cache from DB-stored PR URLs on startup.
@@ -154,9 +155,11 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 		prURL := ""
 
 		// Apply cached PR if available (no network call)
-		if cachedPR, cachedURL, ok := LookupCachedPR(host, info.FullName); ok {
+		prState := ""
+		if cachedPR, cachedURL, cachedState, ok := LookupCachedPR(host, info.FullName); ok {
 			pr = cachedPR
 			prURL = cachedURL
+			prState = cachedState
 		}
 
 		sessions = append(sessions, Session{
@@ -169,6 +172,7 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 			GitChanges:    bar.GitChanges,
 			PR:            pr,
 			PRURL:         prURL,
+			PRState:       prState,
 			Context:       bar.Context,
 			Duration:      time.Since(info.Created),
 			AttachedCount: info.AttachedCount,
@@ -181,15 +185,15 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 }
 
 // LookupCachedPR returns PR info from cache without any network calls.
-func LookupCachedPR(host, fullName string) (string, string, bool) {
+func LookupCachedPR(host, fullName string) (string, string, string, bool) {
 	key := host + ":" + fullName
 	prCacheMu.Lock()
 	defer prCacheMu.Unlock()
 	entry, ok := prCache[key]
 	if !ok || time.Since(entry.ResolvedAt) >= prCacheTTL {
-		return "", "", false
+		return "", "", "", false
 	}
-	return entry.PR, entry.PRURL, true
+	return entry.PR, entry.PRURL, entry.PRState, true
 }
 
 // statusPriority returns sort priority (lower = more important, shown first).

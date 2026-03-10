@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/simon/crabctl/internal/session"
 	"github.com/simon/crabctl/internal/state"
@@ -27,14 +28,28 @@ var sendCmd = &cobra.Command{
 			return fmt.Errorf("failed to send: %w", err)
 		}
 
-		// Record interaction time
+		fmt.Printf("Sent to %q: %s\n", args[0], text)
+
+		// Record interaction time and resolve session ID from history
 		if store, err := state.Open(); err == nil {
+			defer store.Close()
 			key := session.SessionKey(host, fullName)
 			_ = store.SaveInteraction(key)
-			store.Close()
+
+			// Capture workDir before sleeping — pane path is stable now
+			workDir := exec.GetPanePath(fullName)
+
+			// Wait for Claude to process the message and write to history
+			time.Sleep(3 * time.Second)
+			historyContent, err := exec.ReadHistoryTail(100)
+			if err == nil && historyContent != "" {
+				sessionID := session.FindSessionIDByMessage(historyContent, text, 10*time.Second, workDir)
+				if sessionID != "" {
+					_ = store.SaveSessionUUID(key, sessionID, workDir, "")
+				}
+			}
 		}
 
-		fmt.Printf("Sent to %q: %s\n", args[0], text)
 		return nil
 	},
 }

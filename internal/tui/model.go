@@ -69,6 +69,7 @@ type prResolvedMsg struct {
 	Host     string
 	PR       string
 	PRURL    string
+	PRState  string
 }
 
 type sessionCreatedMsg struct {
@@ -148,6 +149,8 @@ type Model struct {
 	autoForward      map[string]bool      // fullName -> enabled
 	autoForwardCount map[string]int       // fullName -> consecutive forwards sent
 	waitingSince     map[string]time.Time // fullName -> when first seen waiting
+	// Stored session UUIDs from DB (loaded once on startup, used in mergeSessionState)
+	storedUUIDs    map[string][3]string // session name → [uuid, workDir, firstMsg]
 	// Parent-child hierarchy
 	parents        map[string]string    // session key → parent key (from DB)
 	foldState      map[string]int       // session key → fold state (per-session Ctrl+H)
@@ -224,6 +227,9 @@ func NewModel(executors []tmux.Executor, restore *RestoreState, store *state.Sto
 		}
 		if li, err := store.LoadAllInteractions(); err == nil {
 			m.lastInteracted = li
+		}
+		if uuids, err := store.LoadAllSessionUUIDs(); err == nil {
+			m.storedUUIDs = uuids
 		}
 	}
 	if m.parents == nil {
@@ -376,6 +382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.sessions[i].PR = msg.PR
 				}
 				m.sessions[i].PRURL = msg.PRURL
+				m.sessions[i].PRState = msg.PRState
 				// Persist to DB
 				if msg.PRURL != "" && m.store != nil {
 					m.store.SavePR(msg.FullName, msg.PRURL)
@@ -443,6 +450,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.refreshPending {
 			for i := range m.sessions {
 				m.sessions[i].PRURL = ""
+				m.sessions[i].PRState = ""
 			}
 			m.refreshPending = false
 		}
@@ -997,6 +1005,13 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 	m.confirmKill.Killing = true
 	targets := m.confirmKill.Targets
 	store := m.store
+	// Collect claimed UUIDs so kill-path resolution doesn't steal another session's UUID
+	claimed := make(map[string]bool)
+	for _, s := range m.sessions {
+		if s.SessionUUID != "" {
+			claimed[s.SessionUUID] = true
+		}
+	}
 	// Use the last target for the completion message (triggers refresh)
 	last := targets[len(targets)-1]
 	killCmd := func() tea.Msg {
@@ -1006,7 +1021,7 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 			if uuid == "" {
 				paneContent, _ := exec.CapturePaneOutput(t.FullName, 50)
 				created := tmux.GetSessionCreated(t.FullName)
-				uuid, firstMsg = session.FindSessionUUID(t.WorkDir, created, paneContent, nil)
+				uuid, firstMsg = session.FindSessionUUID(t.WorkDir, created, paneContent, claimed)
 			}
 			_ = exec.KillSession(t.FullName)
 			if store != nil && uuid != "" {
@@ -1048,9 +1063,10 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 				s.SessionUUID = old.SessionUUID
 				s.SessionFirstMsg = old.SessionFirstMsg
 			}
-			// Carry forward PRURL if the PR number hasn't changed.
+			// Carry forward PRURL and PRState if the PR number hasn't changed.
 			if old.PRURL != "" && old.PR == s.PR {
 				s.PRURL = old.PRURL
+				s.PRState = old.PRState
 			}
 		}
 
@@ -1061,16 +1077,47 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 			}
 		}
 
-		// Resolve UUID for new local sessions
-		if s.SessionUUID == "" && s.Host == "" && s.WorkDir != "" {
-			s.SessionUUID, s.SessionFirstMsg = session.FindSessionUUID(
-				s.WorkDir, time.Now().Add(-s.Duration), s.PaneContent, claimed,
-			)
-			if s.SessionUUID != "" {
-				claimed[s.SessionUUID] = true
-				// Persist to DB so the UUID survives accidental kills
-				if m.store != nil {
-					m.store.SaveSessionUUID(s.FullName, s.SessionUUID, s.WorkDir, s.SessionFirstMsg)
+		// Resolve UUID: file content matching (tool calls + user msgs vs pane),
+		// then DB-stored, as strategies.
+		if s.SessionUUID == "" {
+			key := session.SessionKey(s.Host, s.FullName)
+
+			// Strategy 1: match session file content against pane (local only)
+			// Now includes tool call matching which is more reliable than
+			// user messages alone (tool calls persist on screen longer).
+			if s.Host == "" && s.WorkDir != "" {
+				s.SessionUUID, s.SessionFirstMsg = session.FindSessionUUID(
+					s.WorkDir, time.Now().Add(-s.Duration), s.PaneContent, claimed,
+				)
+				if s.SessionUUID != "" {
+					claimed[s.SessionUUID] = true
+					if m.store != nil {
+						m.store.SaveSessionUUID(key, s.SessionUUID, s.WorkDir, s.SessionFirstMsg)
+					}
+				}
+			}
+
+			// Strategy 2: use DB-stored UUID (from send/detach history resolution)
+			// Validate that the session file has been modified during this
+			// tmux session's lifetime — stale/missing files are not trusted.
+			if s.SessionUUID == "" {
+				if stored, ok := m.storedUUIDs[key]; ok && stored[0] != "" {
+					storedWorkDir := stored[1]
+					if storedWorkDir == "" {
+						storedWorkDir = s.WorkDir
+					}
+					modTime := session.SessionFileModTime(storedWorkDir, stored[0])
+					sessionCreated := time.Now().Add(-s.Duration)
+					if !modTime.IsZero() && modTime.After(sessionCreated) {
+						s.SessionUUID = stored[0]
+						if s.WorkDir == "" {
+							s.WorkDir = stored[1]
+						}
+						if s.SessionFirstMsg == "" {
+							s.SessionFirstMsg = stored[2]
+						}
+						claimed[s.SessionUUID] = true
+					}
 				}
 			}
 		}
@@ -1576,14 +1623,14 @@ func (m Model) resolvePRsCmd() tea.Cmd {
 			continue // already resolved or no workdir
 		}
 		// Skip if cache already has an entry (even empty = no PR)
-		if _, _, ok := session.LookupCachedPR(s.Host, s.FullName); ok {
+		if _, _, _, ok := session.LookupCachedPR(s.Host, s.FullName); ok {
 			continue
 		}
 		host, fullName, workDir := s.Host, s.FullName, s.WorkDir
 		exec := m.findExecutor(host)
 		cmds = append(cmds, func() tea.Msg {
-			pr, prURL := session.ResolveBranchPR(host, fullName, workDir, exec)
-			return prResolvedMsg{FullName: fullName, Host: host, PR: pr, PRURL: prURL}
+			pr, prURL, prState := session.ResolveBranchPR(host, fullName, workDir, exec)
+			return prResolvedMsg{FullName: fullName, Host: host, PR: pr, PRURL: prURL, PRState: prState}
 		})
 	}
 	if len(cmds) == 0 {

@@ -318,6 +318,54 @@ func GetPanePath(fullName string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// ReadHistoryTail reads the last n lines from ~/.claude/history.jsonl.
+func ReadHistoryTail(n int) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	path := home + "/.claude/history.jsonl"
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// Read from end: seek to end, then scan backwards for n newlines
+	stat, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	size := stat.Size()
+	if size == 0 {
+		return "", nil
+	}
+
+	// Read up to 64KB from the end (should be plenty for ~100 lines)
+	readSize := int64(64 * 1024)
+	if readSize > size {
+		readSize = size
+	}
+	buf := make([]byte, readSize)
+	_, err = f.ReadAt(buf, size-readSize)
+	if err != nil {
+		return "", err
+	}
+
+	content := string(buf)
+	lines := strings.Split(content, "\n")
+
+	// Take last n non-empty lines
+	var result []string
+	for i := len(lines) - 1; i >= 0 && len(result) < n; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			result = append([]string{lines[i]}, result...)
+		}
+	}
+	return strings.Join(result, "\n"), nil
+}
+
 // GetSessionCreated returns the creation time of a tmux session.
 func GetSessionCreated(fullName string) time.Time {
 	tmuxBin, err := FindTmux()
