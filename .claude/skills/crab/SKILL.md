@@ -35,24 +35,16 @@ If no local or remote sessions found, report that and stop.
 
 ### 3. Capture output from each session
 
-**ALWAYS use `crabctl capture`** instead of raw `tmux capture-pane`. It automatically strips Claude Code's autocomplete ghost text (dim/bright-black ANSI styling) and all ANSI codes, giving you clean output safe for analysis.
+**NEVER use raw `tmux capture-pane` — ALWAYS use `crabctl capture`.** Raw tmux output contains ghost/autocomplete text (dim ANSI styling) that looks identical to real user input after ANSI stripping, causing you to misread session state (e.g. thinking a session has pending typed input when it's actually empty with autocomplete suggestions). `crabctl capture` strips all of this automatically.
 
-**Local sessions:**
 ```bash
-crabctl capture SESSION_NAME
-crabctl capture SESSION_NAME -S 50  # capture more lines (default: 30)
+crabctl capture SESSION_NAME                       # local session
+crabctl capture SESSION_NAME -S 50                 # more lines (default: 30)
+crabctl capture HOST:SESSION_NAME                  # remote session via SSH
+crabctl capture workbench-bay-falkenstein-1:simon-foo  # remote example
 ```
 
-**Remote sessions:**
-```bash
-crabctl capture HOST:SESSION_NAME
-```
-
-**Fallback (only if crabctl is not available):**
-```bash
-tmux capture-pane -t SESSION_NAME -p -S -30
-```
-Note: Raw tmux output will contain ghost text and ANSI codes that corrupt status detection and analysis.
+**No fallback.** If `crabctl` is not in PATH, use `bin/crabctl` or `./bin/crabctl`. Do NOT use `ssh HOST "tmux capture-pane ..."` for remote sessions — use `crabctl capture HOST:SESSION` which handles SSH + ghost text stripping in one command.
 
 ### 4. Analyze and summarize
 
