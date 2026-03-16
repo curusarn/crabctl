@@ -310,14 +310,21 @@ func detectStatus(lines []string) Status {
 			contentLines++
 		}
 
-		// Once we've seen the prompt, only scan for TASK DONE! (with space)
+		// Once we've seen the prompt, check for TASK DONE! and running
+		// indicators above the prompt before concluding "waiting".
 		// Note: the autoforward prompt contains TASK_DONE! (underscore) to
 		// avoid false positives from the sent message visible in the pane.
 		if sawPrompt {
 			if strings.Contains(trimmed, "TASK DONE!") {
 				return TaskDone
 			}
-			// Non-TASK-DONE content above prompt = just waiting
+			// A spinner line above the prompt means the session is
+			// actively running — the ❯ prompt is just Claude Code's
+			// TUI layout, not an idle indicator.
+			if isRunningIndicator(trimmed) {
+				return Running
+			}
+			// Non-TASK-DONE, non-running content above prompt = just waiting
 			return Waiting
 		}
 

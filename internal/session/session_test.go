@@ -280,6 +280,35 @@ TASK DONE!
   ⏵⏵ bypass permissions on (shift+tab to cycle)`,
 			expect: Waiting,
 		},
+		{
+			name: "spinner above prompt means running not waiting",
+			input: ` ⏺ Let me create all the app files.
+
+ ✢ Nesting… (53s · ↓ 738 tokens · thought for 2s)
+
+ ❯`,
+			expect: Running,
+		},
+		{
+			name: "spinner above prompt with status bar means running",
+			input: ` ⏺ Let me create all the app files.
+
+ ✻ Whisking… (1m 35s · ↓ 2.8k tokens · thought for 2s)
+
+ ❯
+───────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Running,
+		},
+		{
+			name: "basic spinner above prompt means running",
+			input: ` ⏺ Read(main.go)
+
+ ✽ Thinking…
+
+ ❯`,
+			expect: Running,
+		},
 	}
 
 	for _, tt := range tests {
