@@ -1,0 +1,24 @@
+╭─── Claude Code v2.1.131 ─────────────────────────────────────────────────────╮
+│                                                     Tips for getting        │
+│                 Welcome back Simon!                 started                 │
+│                                                     Run /init to create a … │
+│                       ▐▛███▜▌                       ─────────────────────── │
+│                      ▝▜█████▛▘                      What's new              │
+│                        ▘▘ ▝▝                        Fixed VS Code extensio… │
+│   Opus 4.7 (1M context) with hi… · Claude Max ·     Fixed Mantle endpoint … │
+│   simon@betterstack.com's Organization              Added `--plugin-url <u… │
+│                    /private/tmp                     /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Hello, this is a queued message
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+                           19 skill descriptions dropped · /doctor for details
+
+
+
+
+
+
+

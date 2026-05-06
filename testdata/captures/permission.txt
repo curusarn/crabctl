@@ -1,0 +1,74 @@
+  157
+  158
+  159
+  160
+  161
+  162
+  163
+  164
+  165
+  166
+  167
+  168
+  169
+  170
+  171
+  172
+  173
+  174
+  175
+  176
+  177
+  178
+  179
+  180
+  181
+  182
+  183
+  184
+  185
+  186
+  187
+  188
+  189
+  190
+  191
+  192
+  193
+  194
+  195
+  196
+  197
+  198
+  199
+  200
+
+✻ Crunched for 5s
+
+❯ run 'ls /tmp' using Bash
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Listed /tmp — lots of contents (JSON dumps, screenshots, sentry-test dirs,
+  ~400 zeb_def_ipc_* sockets, etc.).
+
+✻ Crunched for 7s
+
+❯ create file /tmp/permission-test-1778087903.txt with content hello using Bash
+
+⏺ Bash(printf 'hello' > /tmp/permission-test-1778087903.txt)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   printf 'hello' > /tmp/permission-test-1778087903.txt
+   Create test file with content hello
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to tmp/ from this project
+   3. No
+
+ Esc to cancel · Tab to amend · ctrl+e to explain
+
