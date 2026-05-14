@@ -67,6 +67,7 @@ func Open() (*Store, error) {
 		"ALTER TABLE sessions ADD COLUMN first_msg TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN killed_at TIMESTAMP",
 		"ALTER TABLE sessions ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sessions ADD COLUMN pr_state TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN parent TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE sessions ADD COLUMN last_interacted TIMESTAMP",
 	} {
@@ -239,33 +240,36 @@ func (s *Store) LoadAllParents() (map[string]string, error) {
 	return result, rows.Err()
 }
 
-// SavePR persists the PR URL for a session.
-func (s *Store) SavePR(name, prURL string) error {
+// SavePR persists the PR URL and state for a session.
+// name should be in SessionKey format (e.g. "crab-worker" or "bay1:crab-worker").
+func (s *Store) SavePR(name, prURL, prState string) error {
 	_, err := s.db.Exec(`
-		INSERT INTO sessions (name, pr_url, updated_at)
-		VALUES (?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO sessions (name, pr_url, pr_state, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(name) DO UPDATE SET
 			pr_url = excluded.pr_url,
+			pr_state = excluded.pr_state,
 			updated_at = CURRENT_TIMESTAMP
-	`, name, prURL)
+	`, name, prURL, prState)
 	return err
 }
 
-// LoadAllPRs returns a map of session fullName -> PR URL for all sessions with a PR.
-func (s *Store) LoadAllPRs() (map[string]string, error) {
-	rows, err := s.db.Query("SELECT name, pr_url FROM sessions WHERE pr_url != ''")
+// LoadAllPRs returns a map of session key -> [prURL, prState] for all sessions with a PR.
+// Keys are in SessionKey format (e.g. "crab-worker" or "bay1:crab-worker").
+func (s *Store) LoadAllPRs() (map[string][2]string, error) {
+	rows, err := s.db.Query("SELECT name, pr_url, pr_state FROM sessions WHERE pr_url != ''")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	result := make(map[string]string)
+	result := make(map[string][2]string)
 	for rows.Next() {
-		var name, prURL string
-		if err := rows.Scan(&name, &prURL); err != nil {
+		var name, prURL, prState string
+		if err := rows.Scan(&name, &prURL, &prState); err != nil {
 			return nil, err
 		}
-		result[name] = prURL
+		result[name] = [2]string{prURL, prState}
 	}
 	return result, rows.Err()
 }

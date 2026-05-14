@@ -69,6 +69,7 @@ type Session struct {
 type prCacheEntry struct {
 	PR, PRURL, PRState string
 	ResolvedAt         time.Time
+	Persistent         bool // true = loaded from DB, survives TTL expiry
 }
 
 var (
@@ -91,12 +92,14 @@ func ResolveBranchPR(host, fullName, workDir string, ex tmux.Executor) (string, 
 	if workDir == "" {
 		return "", "", ""
 	}
-	key := host + ":" + fullName
+	key := SessionKey(host, fullName)
 
 	prCacheMu.Lock()
-	if entry, ok := prCache[key]; ok && time.Since(entry.ResolvedAt) < prCacheTTL {
-		prCacheMu.Unlock()
-		return entry.PR, entry.PRURL, entry.PRState
+	if entry, ok := prCache[key]; ok {
+		if entry.Persistent || time.Since(entry.ResolvedAt) < prCacheTTL {
+			prCacheMu.Unlock()
+			return entry.PR, entry.PRURL, entry.PRState
+		}
 	}
 	prCacheMu.Unlock()
 
@@ -109,20 +112,25 @@ func ResolveBranchPR(host, fullName, workDir string, ex tmux.Executor) (string, 
 	return pr, prURL, prState
 }
 
-// WarmPRCache populates the PR cache from DB-stored PR URLs on startup.
-func WarmPRCache(entries map[string]string) {
+// WarmPRCache populates the PR cache from DB-stored PR URLs.
+// Keys are in SessionKey format (e.g. "crab-worker" or "bay1:crab-worker").
+// Entries are marked persistent so they survive TTL expiry.
+func WarmPRCache(entries map[string][2]string) {
 	prCacheMu.Lock()
 	defer prCacheMu.Unlock()
-	for fullName, prURL := range entries {
+	for key, data := range entries {
+		prURL, prState := data[0], data[1]
 		// Extract "PR #N" from URL (last path segment)
 		pr := ""
 		if idx := strings.LastIndex(prURL, "/"); idx >= 0 {
 			pr = "PR #" + prURL[idx+1:]
 		}
-		prCache[":"+fullName] = prCacheEntry{
+		prCache[key] = prCacheEntry{
 			PR:         pr,
 			PRURL:      prURL,
+			PRState:    prState,
 			ResolvedAt: time.Now(),
+			Persistent: true,
 		}
 	}
 }
@@ -185,12 +193,16 @@ func ListExecutor(ex tmux.Executor) ([]Session, error) {
 }
 
 // LookupCachedPR returns PR info from cache without any network calls.
+// Persistent entries (loaded from DB) survive TTL expiry.
 func LookupCachedPR(host, fullName string) (string, string, string, bool) {
-	key := host + ":" + fullName
+	key := SessionKey(host, fullName)
 	prCacheMu.Lock()
 	defer prCacheMu.Unlock()
 	entry, ok := prCache[key]
-	if !ok || time.Since(entry.ResolvedAt) >= prCacheTTL {
+	if !ok {
+		return "", "", "", false
+	}
+	if !entry.Persistent && time.Since(entry.ResolvedAt) >= prCacheTTL {
 		return "", "", "", false
 	}
 	return entry.PR, entry.PRURL, entry.PRState, true

@@ -64,7 +64,12 @@ func Load() (*Config, error) {
 
 	// Fall back to env vars for workbench auto-discovery
 	if len(cfg.Hosts) == 0 {
-		if wh := os.Getenv("WORKBENCH_HOST"); wh != "" {
+		// WORKBENCH_HOSTS accepts a comma-separated list; fall back to singular WORKBENCH_HOST
+		hostsEnv := os.Getenv("WORKBENCH_HOSTS")
+		if hostsEnv == "" {
+			hostsEnv = os.Getenv("WORKBENCH_HOST")
+		}
+		if hostsEnv != "" {
 			prefix := os.Getenv("WORKBENCH_USER")
 			if prefix == "" {
 				prefix = os.Getenv("USER")
@@ -75,14 +80,20 @@ func Load() (*Config, error) {
 			if cfg.Hosts == nil {
 				cfg.Hosts = make(map[string]HostConfig)
 			}
-			nickname := "workbench"
-			if m := bayRe.FindStringSubmatch(wh); m != nil {
-				nickname = "bay" + m[1]
-			}
-			cfg.Hosts[nickname] = HostConfig{
-				Host:   wh,
-				User:   "root",
-				Prefix: prefix,
+			for _, wh := range strings.Split(hostsEnv, ",") {
+				wh = strings.TrimSpace(wh)
+				if wh == "" {
+					continue
+				}
+				nickname := "workbench"
+				if m := bayRe.FindStringSubmatch(wh); m != nil {
+					nickname = "bay" + m[1]
+				}
+				cfg.Hosts[nickname] = HostConfig{
+					Host:   wh,
+					User:   "root",
+					Prefix: prefix,
+				}
 			}
 		}
 	}

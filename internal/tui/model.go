@@ -385,7 +385,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessions[i].PRState = msg.PRState
 				// Persist to DB
 				if msg.PRURL != "" && m.store != nil {
-					m.store.SavePR(msg.FullName, msg.PRURL)
+					m.store.SavePR(session.SessionKey(msg.Host, msg.FullName), msg.PRURL, msg.PRState)
 				}
 				break
 			}
@@ -529,6 +529,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.Sessions) == 0 && oldHostCount > 0 {
 			return m, nil
 		}
+		// Carry forward already-resolved session state (UUIDs, PR URLs)
+		m.mergeSessionState(msg.Sessions)
 		m.sessions = append(kept, msg.Sessions...)
 		// Auto-persist parents discovered from tmux env (CRABCTL_PARENT)
 		m.persistDiscoveredParents(msg.Sessions)
@@ -1036,10 +1038,10 @@ func (m Model) executeKill() (Model, tea.Cmd) {
 // mergeSessionState carries forward already-resolved UUIDs and PR URLs
 // from old sessions, resolving new ones only when first discovered.
 func (m *Model) mergeSessionState(sessions []session.Session) {
-	// Build lookup from existing sessions
+	// Build lookup from existing sessions (keyed by host:fullName for uniqueness)
 	known := make(map[string]session.Session)
 	for _, s := range m.sessions {
-		known[s.FullName] = s
+		known[session.SessionKey(s.Host, s.FullName)] = s
 	}
 
 	// Collect all claimed UUIDs so new resolutions skip already-matched files
@@ -1052,7 +1054,8 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 
 	for i := range sessions {
 		s := &sessions[i]
-		if old, ok := known[s.FullName]; ok {
+		sKey := session.SessionKey(s.Host, s.FullName)
+		if old, ok := known[sKey]; ok {
 			// Carry forward stable project directory from first discovery.
 			// Pane's current path can change if Claude cd's.
 			if old.WorkDir != "" {
@@ -1064,23 +1067,26 @@ func (m *Model) mergeSessionState(sessions []session.Session) {
 				s.SessionFirstMsg = old.SessionFirstMsg
 			}
 			// Carry forward PRURL and PRState if the PR number hasn't changed.
-			if old.PRURL != "" && old.PR == s.PR {
+			if old.PRURL != "" && (s.PR == "" || old.PR == s.PR) {
 				s.PRURL = old.PRURL
 				s.PRState = old.PRState
+				if s.PR == "" {
+					s.PR = old.PR
+				}
 			}
 		}
 
 		// Persist new PR URLs to DB
 		if s.PRURL != "" && m.store != nil {
-			if old, ok := known[s.FullName]; !ok || old.PRURL != s.PRURL {
-				m.store.SavePR(s.FullName, s.PRURL)
+			if old, ok := known[sKey]; !ok || old.PRURL != s.PRURL {
+				m.store.SavePR(sKey, s.PRURL, s.PRState)
 			}
 		}
 
 		// Resolve UUID: file content matching (tool calls + user msgs vs pane),
 		// then DB-stored, as strategies.
 		if s.SessionUUID == "" {
-			key := session.SessionKey(s.Host, s.FullName)
+			key := sKey
 
 			// Strategy 1: match session file content against pane (local only)
 			// Now includes tool call matching which is more reliable than
@@ -1585,6 +1591,12 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 func (m *Model) performRefresh() tea.Cmd {
 	m.refreshPending = true
 	session.ClearPRCache()
+	// Re-warm PR cache from DB so persisted PRs survive the refresh
+	if m.store != nil {
+		if prs, err := m.store.LoadAllPRs(); err == nil {
+			session.WarmPRCache(prs)
+		}
+	}
 	// Reload interactions from DB (picks up changes from other crabctl instances)
 	if m.store != nil {
 		if li, err := m.store.LoadAllInteractions(); err == nil {
