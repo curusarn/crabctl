@@ -281,6 +281,9 @@ func (m Model) handlePickerNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err == nil && parent != "" && store != nil {
 				store.SaveParent(session.SessionKey("", fullName), parent)
 			}
+			if err == nil {
+				notifyOrchestratorOfSpawn(fullName, dir)
+			}
 			return sessionCreatedMsg{Name: name, Err: err}
 		}
 	}
@@ -304,6 +307,25 @@ func (m Model) handlePickerNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// notifyOrchestratorOfSpawn drops a notification into crab-orchestrator's
+// chat input (if it's alive) when a new crab is spawned from the TUI's
+// dir-picker. The message is NOT submitted — it lands in the input so the
+// orchestrator's user/operator can review/edit/extend it before sending.
+//
+// No-op if the orchestrator session doesn't exist, or if the new session is
+// itself the orchestrator (avoid notifying yourself).
+func notifyOrchestratorOfSpawn(spawnedFullName, dir string) {
+	orchestrator := tmux.SessionPrefix + OrchestratorName
+	if spawnedFullName == orchestrator {
+		return
+	}
+	if !tmux.HasSession(orchestrator) {
+		return
+	}
+	msg := fmt.Sprintf("🔔 New crab session created: %s in %s", spawnedFullName, dir)
+	_ = tmux.SendLiteral(orchestrator, msg)
 }
 
 // takenSessionNames returns the set of session names (without crab- prefix)

@@ -267,6 +267,19 @@ func SendEnter(fullName string) {
 	exec.Command(tmuxBin, "send-keys", "-t", fullName, "Enter").Run() //nolint:errcheck
 }
 
+// SendLiteral sends literal text to a session WITHOUT pressing Enter.
+// Used for the orchestrator notification path — the message should land in
+// the session's chat input so the user can review and edit it before
+// submitting, not be auto-sent.
+func SendLiteral(fullName, text string) error {
+	tmuxBin, err := FindTmux()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(tmuxBin, "send-keys", "-t", fullName, "-l", text)
+	return cmd.Run()
+}
+
 // filterTMUX removes the TMUX env var so we can attach from within tmux.
 func filterTMUX(env []string) []string {
 	filtered := make([]string, 0, len(env))
