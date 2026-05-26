@@ -146,7 +146,18 @@ func (m Model) View() string {
 	if m.resumeMode {
 		m.renderResumeList(&b, m.preview != nil)
 	} else if len(m.sessions) == 0 && m.err == nil {
-		b.WriteString("  No sessions. Run: crabctl new <name>\n")
+		b.WriteString(titleStyle.Render("  Start an orchestrator"))
+		b.WriteString("\n\n")
+		b.WriteString("  Hit ")
+		b.WriteString(confirmKeyStyle.Render("ctrl+n"))
+		b.WriteString("  or type ")
+		b.WriteString(inputLabelStyle.Render("/orchestrator"))
+		b.WriteString(helpStyle.Render("  to create a crab-orchestrator session in ~/git/crabctl."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  The orchestrator is a long-running Claude session that can spawn"))
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("  and coordinate other crabs on your behalf."))
+		b.WriteString("\n\n")
 		if !m.hasRemoteHosts() && os.Getenv("INFRASTRUCTURE_AS_RUBY_PATH") != "" {
 			b.WriteString(helpStyle.Render("  Set WORKBENCH_HOST to manage remote sessions") + "\n")
 		}

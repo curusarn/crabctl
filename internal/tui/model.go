@@ -35,8 +35,13 @@ type commandDef struct {
 	Description string // "create a new session"
 }
 
+// OrchestratorName is the reserved session name for the singleton orchestrator.
+// The orchestrator is always anchored at ~/git/crabctl.
+const OrchestratorName = "orchestrator"
+
 var commandDefs = []commandDef{
 	{"/new", "/new [name] [dir]", "create a new session (no args = directory picker)"},
+	{"/orchestrator", "/orchestrator", "spawn the singleton crab-orchestrator session"},
 	{"/refresh", "/refresh", "force re-fetch all sessions and PR info"},
 	{"/resume", "/resume", "browse and resume past Claude sessions"},
 	{"/quit", "/quit", "quit crabctl"},
@@ -868,10 +873,16 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		// /new with no args opens the directory picker.
+		// /new with no args routes through openSpawnFlow (picker or orchestrator).
 		if text == "/new" {
 			m.input.SetValue("")
 			return m.openSpawnFlow()
+		}
+
+		// /orchestrator spawns the reserved singleton crab-orchestrator.
+		if text == "/orchestrator" {
+			m.input.SetValue("")
+			return m, m.spawnOrchestratorCmd()
 		}
 
 		// /new command: create a new session
@@ -1419,9 +1430,15 @@ func (m Model) selectedSession() *session.Session {
 	return &s
 }
 
-// openSpawnFlow opens the directory picker rooted at the focused session's
-// WorkDir (or $HOME if nothing's focused). Closes any open preview first.
+// openSpawnFlow routes Ctrl+N (or `/new`-no-args) to the right action:
+//   - if no sessions exist yet → spawn the orchestrator directly
+//   - otherwise → open the directory picker
+//
+// One shortcut, two behaviors, so users only learn ctrl+n.
 func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
+	if len(m.sessions) == 0 {
+		return m, m.spawnOrchestratorCmd()
+	}
 	startDir := ""
 	if sel := m.selectedSession(); sel != nil {
 		startDir = sel.WorkDir
@@ -1430,6 +1447,41 @@ func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
 	m.input.SetValue("")
 	m.dirPicker = openDirPicker(startDir)
 	return m, nil
+}
+
+// spawnOrchestratorCmd builds the tea.Cmd that creates the reserved
+// crab-orchestrator session anchored at ~/git/crabctl. Singleton — errors
+// out if it already exists.
+func (m Model) spawnOrchestratorCmd() tea.Cmd {
+	store := m.store
+	parent := tmux.DetectParent("")
+	return func() tea.Msg {
+		fullName := tmux.SessionPrefix + OrchestratorName
+		if tmux.HasSession(fullName) {
+			return sessionCreatedMsg{Name: OrchestratorName, Err: fmt.Errorf("orchestrator already running")}
+		}
+		dir := orchestratorDir()
+		claudeArgs := []string{"--dangerously-skip-permissions"}
+		err := tmux.NewSession(OrchestratorName, dir, claudeArgs, parent)
+		if err == nil && parent != "" && store != nil {
+			store.SaveParent(session.SessionKey("", fullName), parent)
+		}
+		return sessionCreatedMsg{Name: OrchestratorName, Err: err}
+	}
+}
+
+// orchestratorDir resolves ~/git/crabctl, falling back to $HOME, then cwd.
+func orchestratorDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidate := filepath.Join(home, "git", "crabctl")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		return home
+	}
+	cwd, _ := os.Getwd()
+	return cwd
 }
 
 func (m Model) parseNewCommand(text string) tea.Cmd {
