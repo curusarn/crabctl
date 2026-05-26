@@ -580,6 +580,7 @@ func (m Model) View() string {
 	// Rotating hint footer — only in "calm" modes, skip when we're already
 	// dense (preview, resume, kill confirm, dir-picker). Idle-only.
 	if m.dirPicker == nil && m.preview == nil && !m.resumeMode && m.confirmKill == nil && len(m.sessions) > 0 {
+		b.WriteString("\n")
 		b.WriteString(helpStyle.Render(" " + fixedHint))
 		b.WriteString("\n")
 		if n := len(rotatingHints); n > 0 {
