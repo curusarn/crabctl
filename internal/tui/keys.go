@@ -5,6 +5,8 @@ import "github.com/charmbracelet/bubbles/key"
 type keyMap struct {
 	Up           key.Binding
 	Down         key.Binding
+	Left         key.Binding
+	Right        key.Binding
 	Enter        key.Binding
 	Tab          key.Binding
 	Kill         key.Binding
@@ -12,6 +14,7 @@ type keyMap struct {
 	HideChildren key.Binding
 	Space        key.Binding
 	Refresh      key.Binding
+	NewSession   key.Binding
 	Escape       key.Binding
 	Quit         key.Binding
 	CtrlC        key.Binding
@@ -23,6 +26,12 @@ var keys = keyMap{
 	),
 	Down: key.NewBinding(
 		key.WithKeys("down"),
+	),
+	Left: key.NewBinding(
+		key.WithKeys("left"),
+	),
+	Right: key.NewBinding(
+		key.WithKeys("right"),
 	),
 	Enter: key.NewBinding(
 		key.WithKeys("enter"),
@@ -44,6 +53,9 @@ var keys = keyMap{
 	),
 	Refresh: key.NewBinding(
 		key.WithKeys("ctrl+r"),
+	),
+	NewSession: key.NewBinding(
+		key.WithKeys("ctrl+n"),
 	),
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),

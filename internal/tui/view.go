@@ -381,8 +381,10 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Preview panel (height-limited to keep session list visible)
-	if m.resumeMode && m.preview != nil {
+	// Dir-picker overlay (replaces preview panel when open)
+	if m.dirPicker != nil {
+		m.renderDirPicker(&b)
+	} else if m.resumeMode && m.preview != nil {
 		borderTitle := fmt.Sprintf(" ─── %s ", m.preview.SessionName)
 		titleWidth := lipgloss.Width(borderTitle)
 		remaining := m.width - titleWidth - 2
@@ -467,18 +469,23 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Input line (placeholder changes based on mode)
-	if m.resumeMode && m.preview != nil {
+	// Input line (placeholder changes based on mode). Dir-picker has its own
+	// input rendered inside the picker block, so skip the regular one then.
+	if m.dirPicker != nil {
+		// Help bar is handled below; nothing to render in the input slot.
+	} else if m.resumeMode && m.preview != nil {
 		m.input.Placeholder = "Press enter to resume this session..."
 	} else if m.preview != nil {
 		m.input.Placeholder = "Type and press enter to send a message to the session..."
 	} else {
 		m.input.Placeholder = "Type to filter, /command, ? for shortcuts"
 	}
-	b.WriteString(inputLabelStyle.Render(" > "))
-	b.WriteString(m.input.View())
+	if m.dirPicker == nil {
+		b.WriteString(inputLabelStyle.Render(" > "))
+		b.WriteString(m.input.View())
+	}
 	// Ghost text: show selected suggestion completion inline
-	if val := strings.TrimSpace(m.input.Value()); strings.HasPrefix(val, "/") && !strings.Contains(val, " ") && m.preview == nil && !m.resumeMode {
+	if val := strings.TrimSpace(m.input.Value()); m.dirPicker == nil && strings.HasPrefix(val, "/") && !strings.Contains(val, " ") && m.preview == nil && !m.resumeMode {
 		matches := matchingCommands(val)
 		idx := m.suggestCursor
 		if idx >= len(matches) {
@@ -491,10 +498,19 @@ func (m Model) View() string {
 			}
 		}
 	}
-	b.WriteString("\n")
+	if m.dirPicker == nil {
+		b.WriteString("\n")
+	}
 
 	// Help bar / kill confirmation (same slot to avoid layout shift)
-	if m.confirmKill != nil && m.confirmKill.Killing {
+	if m.dirPicker != nil {
+		switch m.dirPicker.Stage {
+		case pickerStageBrowse:
+			b.WriteString(helpStyle.Render(" ↑/↓ navigate  ←/→ up/down dir  type to filter  enter pick  esc cancel"))
+		case pickerStageName:
+			b.WriteString(helpStyle.Render(" enter spawn  esc back to dirs"))
+		}
+	} else if m.confirmKill != nil && m.confirmKill.Killing {
 		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 		spinner := string(spinnerChars[m.spinnerFrame%len(spinnerChars)])
 		killLabel := m.confirmKillLabel()
@@ -537,6 +553,85 @@ func (m Model) View() string {
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// renderDirPicker draws the directory picker overlay.
+func (m Model) renderDirPicker(b *strings.Builder) {
+	p := m.dirPicker
+
+	// Header
+	b.WriteString(titleStyle.Render(" Where to spawn the crab?"))
+	b.WriteString("\n\n")
+
+	// Breadcrumb / Cwd
+	b.WriteString(headerStyle.Render(" " + shortenPath(p.Cwd, 80)))
+	b.WriteString("\n")
+
+	if p.Stage == pickerStageBrowse {
+		// Filter line (always rendered to avoid layout shift)
+		if p.Filter != "" {
+			b.WriteString(inputLabelStyle.Render(" / "))
+			b.WriteString(p.Filter)
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  (%d match)", len(p.Entries))))
+		} else {
+			b.WriteString(helpStyle.Render(" type to filter, / shows matches"))
+		}
+		b.WriteString("\n\n")
+
+		// Subdir list (windowed if too tall)
+		maxRows := 12
+		if m.height > 0 {
+			budget := m.height - 12
+			if budget < 5 {
+				budget = 5
+			}
+			if budget < maxRows {
+				maxRows = budget
+			}
+		}
+		start := 0
+		if p.Cursor >= maxRows {
+			start = p.Cursor - maxRows + 1
+		}
+		end := start + maxRows
+		if end > len(p.Entries) {
+			end = len(p.Entries)
+		}
+		if len(p.Entries) == 0 {
+			b.WriteString(helpStyle.Render("   (no subdirectories — press ← or backspace to go up)"))
+			b.WriteString("\n")
+		}
+		for i := start; i < end; i++ {
+			name := p.Entries[i] + "/"
+			if i == p.Cursor {
+				b.WriteString(cursorStyle.Render(" >"))
+				b.WriteString(selectedRowStyle.Render(" " + name))
+			} else {
+				b.WriteString("  ")
+				b.WriteString(" " + name)
+			}
+			b.WriteString("\n")
+		}
+		if end < len(p.Entries) {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↓ %d more", len(p.Entries)-end)))
+			b.WriteString("\n")
+		}
+	} else { // pickerStageName
+		b.WriteString("\n")
+		b.WriteString(inputLabelStyle.Render(" Name "))
+		b.WriteString(tmux.SessionPrefix)
+		b.WriteString(p.Name)
+		b.WriteString(cursorStyle.Render("_"))
+		b.WriteString("\n")
+		if p.Err != "" {
+			b.WriteString(confirmLabelStyle.Render(" ✗ " + p.Err))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  in %s", shortenPath(p.Cwd, 60))))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
 }
 
 // confirmKillLabel returns a human-readable label for the kill confirmation.

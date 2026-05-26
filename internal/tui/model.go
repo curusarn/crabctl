@@ -36,7 +36,7 @@ type commandDef struct {
 }
 
 var commandDefs = []commandDef{
-	{"/new", "/new <name> [dir]", "create a new session"},
+	{"/new", "/new [name] [dir]", "create a new session (no args = directory picker)"},
 	{"/refresh", "/refresh", "force re-fetch all sessions and PR info"},
 	{"/resume", "/resume", "browse and resume past Claude sessions"},
 	{"/quit", "/quit", "quit crabctl"},
@@ -157,6 +157,7 @@ type Model struct {
 	lastInteracted map[string]time.Time // session key → last attach/send time
 	// Resume mode: browse past Claude sessions to resume
 	pendingFocus   string // full session name to focus+preview after resume
+	dirPicker      *dirPickerState // non-nil when dir-picker overlay is open
 	resumeMode     bool
 	resumeSessions []session.ClaudeSession
 	resumeFiltered []session.ClaudeSession
@@ -616,6 +617,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Escape
 	if key.Matches(msg, keys.Escape) {
+		if m.dirPicker != nil {
+			return m.handleDirPickerKey(msg)
+		}
 		if m.confirmKill != nil {
 			m.confirmKill = nil
 			return m, nil
@@ -746,6 +750,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Dir-picker overlay takes precedence over all other modes
+	if m.dirPicker != nil {
+		return m.handleDirPickerKey(msg)
+	}
+
+	// Ctrl+N opens the dir-picker (or, in feature 2, the orchestrator quick-spawn)
+	if key.Matches(msg, keys.NewSession) && !m.resumeMode {
+		return m.openSpawnFlow()
+	}
+
 	// Resume mode key handling
 	if m.resumeMode {
 		return m.handleResumeKey(msg)
@@ -852,6 +866,12 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if text == "/quit" {
 			m.quitting = true
 			return m, tea.Quit
+		}
+
+		// /new with no args opens the directory picker.
+		if text == "/new" {
+			m.input.SetValue("")
+			return m.openSpawnFlow()
 		}
 
 		// /new command: create a new session
@@ -1397,6 +1417,19 @@ func (m Model) selectedSession() *session.Session {
 	}
 	s := m.filtered[m.cursor]
 	return &s
+}
+
+// openSpawnFlow opens the directory picker rooted at the focused session's
+// WorkDir (or $HOME if nothing's focused). Closes any open preview first.
+func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
+	startDir := ""
+	if sel := m.selectedSession(); sel != nil {
+		startDir = sel.WorkDir
+	}
+	m.preview = nil
+	m.input.SetValue("")
+	m.dirPicker = openDirPicker(startDir)
+	return m, nil
 }
 
 func (m Model) parseNewCommand(text string) tea.Cmd {
