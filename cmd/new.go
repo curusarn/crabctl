@@ -94,15 +94,31 @@ type promptDetector interface {
 }
 
 // waitForPrompt polls the pane until Claude shows the ❯ prompt.
+// If Claude shows the "Do you trust the files in this folder?" prompt
+// first (always shown for never-seen-before directories), auto-accept it
+// by sending "1" so the new-session message flow doesn't time out.
 func waitForPrompt(exec promptDetector, fullName string) error {
 	timeout := 30 * time.Second
 	poll := 500 * time.Millisecond
 	deadline := time.Now().Add(timeout)
+	trustHandled := false
 
 	for time.Now().Before(deadline) {
 		time.Sleep(poll)
-		output, err := exec.CapturePaneOutput(fullName, 10)
+		// Capture enough lines to cover the multi-line trust prompt body
+		// (header + paragraph + numbered options).
+		output, err := exec.CapturePaneOutput(fullName, 30)
 		if err != nil {
+			continue
+		}
+		if !trustHandled && isTrustPrompt(output) {
+			// SendKeys sends the text then Enter as separate send-keys calls.
+			if err := exec.SendKeys(fullName, "1"); err == nil {
+				trustHandled = true
+				// Give Claude a moment to dismiss the prompt and render
+				// the main UI before re-checking status.
+				time.Sleep(500 * time.Millisecond)
+			}
 			continue
 		}
 		status := session.DetectStatus(output)
@@ -111,6 +127,20 @@ func waitForPrompt(exec promptDetector, fullName string) error {
 		}
 	}
 	return fmt.Errorf("timed out waiting for Claude prompt (%v)", timeout)
+}
+
+// isTrustPrompt detects Claude Code's initial trust-this-folder prompt,
+// which is shown the first time Claude is launched in a directory and
+// blocks the main UI until answered. Wording has varied across Claude
+// versions, so match on multiple distinctive substrings.
+func isTrustPrompt(output string) bool {
+	if output == "" {
+		return false
+	}
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "trust this folder") ||
+		strings.Contains(lower, "trust the files in this folder") ||
+		strings.Contains(lower, "do you trust the files")
 }
 
 // sendMessage sends a message and verifies Claude started processing it.
