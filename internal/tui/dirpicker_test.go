@@ -154,6 +154,30 @@ func TestPickerStateMachineNavigation(t *testing.T) {
 	}
 }
 
+func TestPickerGoUpSelectsLeavingDir(t *testing.T) {
+	// Set up: root/{alpha,beta,gamma}, descend into 'beta', go back up.
+	// Cursor should land on 'beta' (index 1, since alphabetical).
+	root := t.TempDir()
+	for _, sub := range []string{"alpha", "beta", "gamma"} {
+		if err := os.Mkdir(filepath.Join(root, sub), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := openDirPicker(root)
+	p.Cursor = 1 // beta
+	p.enterSelected()
+	if filepath.Base(p.Cwd) != "beta" {
+		t.Fatalf("descend: cwd %q", p.Cwd)
+	}
+	p.goUp()
+	if p.Cwd != root {
+		t.Fatalf("goUp: cwd %q, want %q", p.Cwd, root)
+	}
+	if p.Cursor != 1 {
+		t.Errorf("goUp cursor: got %d (=%q), want 1 (=beta)", p.Cursor, p.Entries[p.Cursor])
+	}
+}
+
 func TestPickerOpenWithMissingDirFallsBack(t *testing.T) {
 	// Non-existent start dir should walk up until something exists.
 	root := t.TempDir()

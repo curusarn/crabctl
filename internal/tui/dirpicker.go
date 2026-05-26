@@ -161,14 +161,22 @@ func (p *dirPickerState) enterSelected() {
 	p.loadCwd()
 }
 
-// goUp moves to the parent directory. No-op at /.
+// goUp moves to the parent directory and positions the cursor on the dir
+// we just left, so ← then → returns to the same place. No-op at /.
 func (p *dirPickerState) goUp() {
 	parent := filepath.Dir(p.Cwd)
 	if parent == p.Cwd {
 		return
 	}
+	leaving := filepath.Base(p.Cwd)
 	p.Cwd = parent
 	p.loadCwd()
+	for i, name := range p.Entries {
+		if name == leaving {
+			p.Cursor = i
+			break
+		}
+	}
 }
 
 // handleDirPickerKey handles keys when the dir-picker overlay is open.
