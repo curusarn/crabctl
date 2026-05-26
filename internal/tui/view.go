@@ -14,6 +14,20 @@ import (
 	"github.com/simon/crabctl/internal/tmux"
 )
 
+// fixedHint is the always-visible primary hint at the bottom of the TUI.
+const fixedHint = `Start new agent by hitting ctrl+n or typing /new or ask orchestrator to: /crab new in <dir>: do task A`
+
+// rotatingHints cycle every ~6s under the fixedHint to surface less-obvious
+// orchestrator workflows. The literal text is reproduced verbatim from the
+// product spec.
+var rotatingHints = []string{
+	`Ask orchestrator to "Report status for all /crab agents"`,
+	`Ask orchestrator to "Clean up unneeded /crab sessions"`,
+	`Ask orchestrator to "Read <Linear URL>, complete the task, delegate to /crab agents as needed"`,
+	`Ask orchestrator to "Babysit crab <NAME>, review its work and give it feedback"`,
+	`Ask orchestrator to "Read task <Linear URL>, prepare acceptance checklist, spawn worker and reviewer (default deny) /crab agents"`,
+}
+
 var (
 	// Adaptive colors for light/dark terminal backgrounds
 	accentColor  = lipgloss.AdaptiveColor{Light: "#D6249F", Dark: "#FF79C6"}
@@ -557,11 +571,23 @@ func (m Model) View() string {
 			b.WriteString("\n")
 		}
 	} else if strings.TrimSpace(m.input.Value()) == "?" {
-		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+r refresh  ctrl+a autoforward  ctrl+h fold  ctrl+k kill"))
+		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+n new  ctrl+r refresh  ctrl+a autoforward  ctrl+h fold  ctrl+k kill"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+k kill"))
+		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  ctrl+n new  ctrl+k kill  ? more"))
 	}
 	b.WriteString("\n")
+
+	// Rotating hint footer — only in "calm" modes, skip when we're already
+	// dense (preview, resume, kill confirm, dir-picker). Idle-only.
+	if m.dirPicker == nil && m.preview == nil && !m.resumeMode && m.confirmKill == nil && len(m.sessions) > 0 {
+		b.WriteString(helpStyle.Render(" " + fixedHint))
+		b.WriteString("\n")
+		if n := len(rotatingHints); n > 0 {
+			idx := m.hintIndex % n
+			b.WriteString(helpStyle.Render(" " + rotatingHints[idx]))
+			b.WriteString("\n")
+		}
+	}
 
 	return b.String()
 }

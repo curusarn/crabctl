@@ -169,6 +169,9 @@ type Model struct {
 	resumeCursor   int
 	refreshPending  bool      // true while a user-initiated refresh is in-flight
 	lastInteraction time.Time // last key/mouse event for remote backoff
+	// Rotating-hint footer state
+	hintIndex        int
+	lastHintRotation time.Time
 	width, height   int
 	AttachTarget    string // set when user confirms attach
 	AttachHost      string // host of session to attach
@@ -569,6 +572,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.syncAutoForwardFromDB()
+		m.rotateHintIfDue()
 		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
 		if m.preview != nil && !m.resumeMode {
 			cmds = append(cmds, m.capturePreviewCmd(m.preview.FullName, m.preview.Host))
@@ -1428,6 +1432,25 @@ func (m Model) selectedSession() *session.Session {
 	}
 	s := m.filtered[m.cursor]
 	return &s
+}
+
+// hintRotationInterval controls how often the rotating footer hint advances.
+const hintRotationInterval = 6 * time.Second
+
+// rotateHintIfDue advances hintIndex if enough time has elapsed since the
+// last rotation. Called from the regular tick handler — drift is bounded by
+// pollInterval (1.5s).
+func (m *Model) rotateHintIfDue() {
+	if m.lastHintRotation.IsZero() {
+		m.lastHintRotation = time.Now()
+		return
+	}
+	if time.Since(m.lastHintRotation) >= hintRotationInterval {
+		if n := len(rotatingHints); n > 0 {
+			m.hintIndex = (m.hintIndex + 1) % n
+		}
+		m.lastHintRotation = time.Now()
+	}
 }
 
 // openSpawnFlow routes Ctrl+N (or `/new`-no-args) to the right action:
