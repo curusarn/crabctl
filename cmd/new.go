@@ -93,6 +93,10 @@ type promptDetector interface {
 	SendKeys(string, string) error
 }
 
+// sendEnter is the post-paste Enter resend used by sendMessage. It's a
+// package var so tests can override it without spinning up real tmux.
+var sendEnter = tmux.SendEnter
+
 // waitForPrompt polls the pane until Claude shows the ❯ prompt.
 // If Claude shows the "Do you trust the files in this folder?" prompt
 // first (always shown for never-seen-before directories), auto-accept it
@@ -144,14 +148,16 @@ func isTrustPrompt(output string) bool {
 }
 
 // sendMessage sends a message and verifies Claude started processing it.
-// Retries the Enter key if Claude is still waiting after sending.
+// Retries the Enter key (up to 2 retries) if Claude is still waiting,
+// to cover the case where the initial Enter was absorbed into a
+// multi-chunk paste despite the post-paste settle in tmux.SendKeys.
 func sendMessage(exec promptDetector, fullName, message string) error {
 	if err := exec.SendKeys(fullName, message); err != nil {
 		return err
 	}
 
 	// Verify Claude started processing (transitioned away from Waiting)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		time.Sleep(500 * time.Millisecond)
 		output, err := exec.CapturePaneOutput(fullName, 10)
 		if err != nil {
@@ -162,7 +168,7 @@ func sendMessage(exec promptDetector, fullName, message string) error {
 			return nil // Claude is processing
 		}
 		// Still waiting — the Enter key might have been lost, resend just Enter
-		tmux.SendEnter(fullName)
+		sendEnter(fullName)
 	}
 	return nil // sent text, best effort
 }
