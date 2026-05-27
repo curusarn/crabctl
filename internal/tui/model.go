@@ -804,22 +804,28 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Navigation and selection: only when input is empty
+	// Arrow keys navigate the filtered session list regardless of input
+	// content (a /command-suggestion menu is handled above and returns early).
+	// Without this, typing a filter would trap the user — they could narrow
+	// the list but not pick from it without first clearing the filter.
+	if key.Matches(msg, keys.Up) {
+		if m.cursor > 0 {
+			m.cursor--
+			m.ensureCursorVisible()
+		}
+		return m, nil
+	}
+	if key.Matches(msg, keys.Down) {
+		if m.cursor < len(m.filtered)-1 {
+			m.cursor++
+			m.ensureCursorVisible()
+		}
+		return m, nil
+	}
+
+	// Multi-select with Space stays gated to empty input — otherwise Space
+	// would be a filter character.
 	if m.input.Value() == "" {
-		if key.Matches(msg, keys.Up) {
-			if m.cursor > 0 {
-				m.cursor--
-				m.ensureCursorVisible()
-			}
-			return m, nil
-		}
-		if key.Matches(msg, keys.Down) {
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-				m.ensureCursorVisible()
-			}
-			return m, nil
-		}
 		if key.Matches(msg, keys.Space) {
 			if sel := m.selectedSession(); sel != nil {
 				if m.selected[sel.FullName] {
