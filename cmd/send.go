@@ -30,11 +30,12 @@ var sendCmd = &cobra.Command{
 
 		fmt.Printf("Sent to %q: %s\n", args[0], text)
 
-		// Record interaction time and resolve session ID from history
+		// Resolve session ID from history (don't record an interaction —
+		// `send` is typically the orchestrator delegating to a worker, so
+		// the worker shouldn't bubble above the orchestrator in the sort).
 		if store, err := state.Open(); err == nil {
 			defer store.Close()
 			key := session.SessionKey(host, fullName)
-			_ = store.SaveInteraction(key)
 
 			// Capture workDir before sleeping — pane path is stable now
 			workDir := exec.GetPanePath(fullName)

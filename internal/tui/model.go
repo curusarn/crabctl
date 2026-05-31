@@ -1008,8 +1008,10 @@ func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		// Send text to session
-		m.recordInteraction(m.preview.FullName, m.preview.Host)
+		// Send text to session — intentionally NOT recorded as an
+		// interaction. Send is typically the orchestrator delegating to a
+		// worker, and we don't want the worker to bubble above the
+		// orchestrator in the sort. Attach (above) still counts.
 		exec := m.findExecutor(m.preview.Host)
 		_ = exec.SendKeys(m.preview.FullName, text)
 		m.input.SetValue("")
