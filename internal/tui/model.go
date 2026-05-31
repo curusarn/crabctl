@@ -449,6 +449,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.parents = parents
 			}
 		}
+		// Treat a successful spawn as an interaction so the new session
+		// bubbles to the top of the sort (BuildTree orders by lastInteracted).
+		if msg.Err == nil && msg.Name != "" {
+			fullName := tmux.SessionPrefix + msg.Name
+			m.recordInteraction(fullName, "")
+		}
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
