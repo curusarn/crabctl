@@ -209,6 +209,39 @@ func TestDetectStatus(t *testing.T) {
 			expect: Running,
 		},
 		{
+			// Real-captured layout: truncated cwd line in the status bar
+			// ends with U+2026. Pre-fix this was misread as a running
+			// spinner because it contained "…".
+			name: "truncated cwd in status bar is NOT running",
+			input: `✻ Crunched for 23s
+
+● How is Claude doing this session? (optional)
+  1: Bad    2: Fine   3: Good   0: Dismiss
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ~/trees/worktree-worktree-1/telemetry [simon/t-14743-bugux-adjust-with-aich…
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+                                            ✗ Auto-update failed · Run /doctor
+                                        new task? /clear to save 639.7k tokens`,
+			expect: Waiting,
+		},
+		{
+			// Variant — absolute-path cwd, same truncation pattern.
+			name: "truncated absolute cwd is NOT running",
+			input: `⏺ Done.
+
+✻ Brewed for 48s
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  /private/tmp/this-is-a-very-long-working-directory-that-overflows-the-pa…
+  ⏵⏵ bypass permissions on (shift+tab to cycle)`,
+			expect: Waiting,
+		},
+		{
 			name: "task done marker with prompt",
 			input: `⏺ Done.
 
