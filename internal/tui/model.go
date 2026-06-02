@@ -1712,13 +1712,12 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 // Sessions are kept visible until new data arrives (no flash).
 func (m *Model) performRefresh() tea.Cmd {
 	m.refreshPending = true
+	// Clear the PR cache and DON'T re-warm from DB — re-warming with
+	// Persistent entries would defeat the whole purpose of /refresh, since
+	// LookupCachedPR would then short-circuit resolvePRsCmd and the user
+	// would never pick up newly-opened PRs. A brief flash of empty PR
+	// cells while gh runs is acceptable; correctness wins.
 	session.ClearPRCache()
-	// Re-warm PR cache from DB so persisted PRs survive the refresh
-	if m.store != nil {
-		if prs, err := m.store.LoadAllPRs(); err == nil {
-			session.WarmPRCache(prs)
-		}
-	}
 	// Reload interactions from DB (picks up changes from other crabctl instances)
 	if m.store != nil {
 		if li, err := m.store.LoadAllInteractions(); err == nil {
