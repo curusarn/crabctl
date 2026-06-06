@@ -253,10 +253,25 @@ func SendKeys(fullName, text string) error {
 		return err
 	}
 
+	// Pause before sending Enter. Large messages stream into Claude
+	// Code fast enough that its TUI groups them into one or more
+	// "[Pasted text #N +K lines]" markers. If Enter arrives while the
+	// paste detector is still buffering, it gets absorbed into the
+	// last paste segment as a literal newline rather than submitting
+	// the input. Letting the paste settle first makes Enter behave as
+	// a submit even for multi-chunk pastes.
+	time.Sleep(PostPasteSettleDelay)
+
 	// Send Enter to submit
 	cmd = exec.Command(tmux, "send-keys", "-t", fullName, "Enter")
 	return cmd.Run()
 }
+
+// PostPasteSettleDelay is the pause between the literal paste and the
+// Enter keystroke. ~200ms is enough for Claude Code to finalize all
+// "[Pasted text #N]" markers for messages we've observed (up to ~5KB)
+// without noticeably slowing down the new-session flow.
+const PostPasteSettleDelay = 200 * time.Millisecond
 
 // SendEnter sends just the Enter key to a session.
 func SendEnter(fullName string) {

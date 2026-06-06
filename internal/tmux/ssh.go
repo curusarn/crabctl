@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // SSHExecutor runs tmux commands on a remote host over SSH.
@@ -144,8 +145,14 @@ func (s *SSHExecutor) NewSession(name, workDir string, claudeArgs []string, pare
 }
 
 func (s *SSHExecutor) SendKeys(fullName, text string) error {
-	_, err := s.run(fmt.Sprintf("tmux send-keys -t %s -l %s && tmux send-keys -t %s Enter",
-		shellQuote(fullName), shellQuote(text), shellQuote(fullName)))
+	if _, err := s.run(fmt.Sprintf("tmux send-keys -t %s -l %s",
+		shellQuote(fullName), shellQuote(text))); err != nil {
+		return err
+	}
+	// Pause to let Claude Code finalize its "[Pasted text #N]" markers
+	// before submitting — see the local SendKeys comment for context.
+	time.Sleep(PostPasteSettleDelay)
+	_, err := s.run(fmt.Sprintf("tmux send-keys -t %s Enter", shellQuote(fullName)))
 	return err
 }
 
