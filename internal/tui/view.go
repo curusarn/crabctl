@@ -14,6 +14,20 @@ import (
 	"github.com/simon/crabctl/internal/tmux"
 )
 
+// fixedHint is the always-visible primary hint at the bottom of the TUI.
+const fixedHint = `Start new agent by hitting ctrl+n or typing /new or ask orchestrator to: /crab new in <dir>: do task A`
+
+// rotatingHints cycle every ~6s under the fixedHint to surface less-obvious
+// orchestrator workflows. The literal text is reproduced verbatim from the
+// product spec.
+var rotatingHints = []string{
+	`Ask orchestrator to "Report status for all /crab agents"`,
+	`Ask orchestrator to "Clean up unneeded /crab sessions"`,
+	`Ask orchestrator to "Read <Linear URL>, complete the task, delegate to /crab agents as needed"`,
+	`Ask orchestrator to "Babysit crab <NAME>, review its work and give it feedback"`,
+	`Ask orchestrator to "Read task <Linear URL>, prepare acceptance checklist, spawn worker and reviewer (default deny) /crab agents"`,
+}
+
 var (
 	// Adaptive colors for light/dark terminal backgrounds
 	accentColor  = lipgloss.AdaptiveColor{Light: "#D6249F", Dark: "#FF79C6"}
@@ -146,7 +160,18 @@ func (m Model) View() string {
 	if m.resumeMode {
 		m.renderResumeList(&b, m.preview != nil)
 	} else if len(m.sessions) == 0 && m.err == nil {
-		b.WriteString("  No sessions. Run: crabctl new <name>\n")
+		b.WriteString(titleStyle.Render("  Start an orchestrator"))
+		b.WriteString("\n\n")
+		b.WriteString("  Hit ")
+		b.WriteString(confirmKeyStyle.Render("ctrl+n"))
+		b.WriteString("  or type ")
+		b.WriteString(inputLabelStyle.Render("/orchestrator"))
+		b.WriteString(helpStyle.Render("  to create a crab-orchestrator session in ~/git/crabctl."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  The orchestrator is a long-running Claude session that can spawn"))
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("  and coordinate other crabs on your behalf."))
+		b.WriteString("\n\n")
 		if !m.hasRemoteHosts() && os.Getenv("INFRASTRUCTURE_AS_RUBY_PATH") != "" {
 			b.WriteString(helpStyle.Render("  Set WORKBENCH_HOST to manage remote sessions") + "\n")
 		}
@@ -381,8 +406,10 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Preview panel (height-limited to keep session list visible)
-	if m.resumeMode && m.preview != nil {
+	// Dir-picker overlay (replaces preview panel when open)
+	if m.dirPicker != nil {
+		m.renderDirPicker(&b)
+	} else if m.resumeMode && m.preview != nil {
 		borderTitle := fmt.Sprintf(" ─── %s ", m.preview.SessionName)
 		titleWidth := lipgloss.Width(borderTitle)
 		remaining := m.width - titleWidth - 2
@@ -467,18 +494,23 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Input line (placeholder changes based on mode)
-	if m.resumeMode && m.preview != nil {
+	// Input line (placeholder changes based on mode). Dir-picker has its own
+	// input rendered inside the picker block, so skip the regular one then.
+	if m.dirPicker != nil {
+		// Help bar is handled below; nothing to render in the input slot.
+	} else if m.resumeMode && m.preview != nil {
 		m.input.Placeholder = "Press enter to resume this session..."
 	} else if m.preview != nil {
 		m.input.Placeholder = "Type and press enter to send a message to the session..."
 	} else {
 		m.input.Placeholder = "Type to filter, /command, ? for shortcuts"
 	}
-	b.WriteString(inputLabelStyle.Render(" > "))
-	b.WriteString(m.input.View())
+	if m.dirPicker == nil {
+		b.WriteString(inputLabelStyle.Render(" > "))
+		b.WriteString(m.input.View())
+	}
 	// Ghost text: show selected suggestion completion inline
-	if val := strings.TrimSpace(m.input.Value()); strings.HasPrefix(val, "/") && !strings.Contains(val, " ") && m.preview == nil && !m.resumeMode {
+	if val := strings.TrimSpace(m.input.Value()); m.dirPicker == nil && strings.HasPrefix(val, "/") && !strings.Contains(val, " ") && m.preview == nil && !m.resumeMode {
 		matches := matchingCommands(val)
 		idx := m.suggestCursor
 		if idx >= len(matches) {
@@ -491,10 +523,19 @@ func (m Model) View() string {
 			}
 		}
 	}
-	b.WriteString("\n")
+	if m.dirPicker == nil {
+		b.WriteString("\n")
+	}
 
 	// Help bar / kill confirmation (same slot to avoid layout shift)
-	if m.confirmKill != nil && m.confirmKill.Killing {
+	if m.dirPicker != nil {
+		switch m.dirPicker.Stage {
+		case pickerStageBrowse:
+			b.WriteString(helpStyle.Render(" ↑/↓ navigate  ←/→ up/down dir  type to filter  enter pick  esc cancel"))
+		case pickerStageName:
+			b.WriteString(helpStyle.Render(" enter spawn  esc back to dirs"))
+		}
+	} else if m.confirmKill != nil && m.confirmKill.Killing {
 		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 		spinner := string(spinnerChars[m.spinnerFrame%len(spinnerChars)])
 		killLabel := m.confirmKillLabel()
@@ -530,13 +571,105 @@ func (m Model) View() string {
 			b.WriteString("\n")
 		}
 	} else if strings.TrimSpace(m.input.Value()) == "?" {
-		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+r refresh  ctrl+a autoforward  ctrl+h fold  ctrl+k kill"))
+		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+n new  ctrl+r refresh  ctrl+a autoforward  ctrl+h fold  ctrl+k kill"))
 	} else {
-		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  space select  ctrl+k kill"))
+		b.WriteString(helpStyle.Render("enter preview  ↑/↓ navigate  ctrl+n new  ctrl+k kill  ? more"))
 	}
 	b.WriteString("\n")
 
+	// Rotating hint footer — only in "calm" modes, skip when we're already
+	// dense (preview, resume, kill confirm, dir-picker). Idle-only.
+	if m.dirPicker == nil && m.preview == nil && !m.resumeMode && m.confirmKill == nil && len(m.sessions) > 0 {
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render(" " + fixedHint))
+		b.WriteString("\n")
+		if n := len(rotatingHints); n > 0 {
+			idx := m.hintIndex % n
+			b.WriteString(helpStyle.Render(" " + rotatingHints[idx]))
+			b.WriteString("\n")
+		}
+	}
+
 	return b.String()
+}
+
+// renderDirPicker draws the directory picker overlay.
+func (m Model) renderDirPicker(b *strings.Builder) {
+	p := m.dirPicker
+
+	// Header
+	b.WriteString(titleStyle.Render(" Where to spawn the crab?"))
+	b.WriteString("\n\n")
+
+	// Breadcrumb / Cwd
+	b.WriteString(headerStyle.Render(" " + shortenPath(p.Cwd, 80)))
+	b.WriteString("\n")
+
+	if p.Stage == pickerStageBrowse {
+		// Filter line (always rendered to avoid layout shift)
+		if p.Filter != "" {
+			b.WriteString(inputLabelStyle.Render(" / "))
+			b.WriteString(p.Filter)
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  (%d match)", len(p.Entries))))
+		} else {
+			b.WriteString(helpStyle.Render(" type to filter, / shows matches"))
+		}
+		b.WriteString("\n\n")
+
+		// Subdir list (windowed if too tall)
+		maxRows := 12
+		if m.height > 0 {
+			budget := m.height - 12
+			if budget < 5 {
+				budget = 5
+			}
+			if budget < maxRows {
+				maxRows = budget
+			}
+		}
+		start := 0
+		if p.Cursor >= maxRows {
+			start = p.Cursor - maxRows + 1
+		}
+		end := start + maxRows
+		if end > len(p.Entries) {
+			end = len(p.Entries)
+		}
+		if len(p.Entries) == 0 {
+			b.WriteString(helpStyle.Render("   (no subdirectories — press ← or backspace to go up)"))
+			b.WriteString("\n")
+		}
+		for i := start; i < end; i++ {
+			name := p.Entries[i] + "/"
+			if i == p.Cursor {
+				b.WriteString(cursorStyle.Render(" >"))
+				b.WriteString(selectedRowStyle.Render(" " + name))
+			} else {
+				b.WriteString("  ")
+				b.WriteString(" " + name)
+			}
+			b.WriteString("\n")
+		}
+		if end < len(p.Entries) {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("    ↓ %d more", len(p.Entries)-end)))
+			b.WriteString("\n")
+		}
+	} else { // pickerStageName
+		b.WriteString("\n")
+		b.WriteString(inputLabelStyle.Render(" Name "))
+		b.WriteString(tmux.SessionPrefix)
+		b.WriteString(p.Name)
+		b.WriteString(cursorStyle.Render("_"))
+		b.WriteString("\n")
+		if p.Err != "" {
+			b.WriteString(confirmLabelStyle.Render(" ✗ " + p.Err))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  in %s", shortenPath(p.Cwd, 60))))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
 }
 
 // confirmKillLabel returns a human-readable label for the kill confirmation.

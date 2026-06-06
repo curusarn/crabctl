@@ -415,6 +415,20 @@ func isRunningIndicator(trimmed string) bool {
 		return false
 	}
 
+	// Exclude path/branch lines from Claude's status bar that get truncated
+	// with U+2026 when too long for the terminal width. Examples seen in
+	// real captures (truncation marked with TRUNC for clarity):
+	//   "~/trees/worktree-1/telemetry [simon/t-14743-bugux-adjust-with-aichTRUNC"
+	//   "~/git/stack/betterstack [simon/t-18121-chart-mogul-proratioTRUNC"
+	// These lines all start with a path char (~ or /), and ending with the
+	// truncation glyph is the dead giveaway that we're looking at a footer
+	// path/branch, not a running indicator.
+	if strings.HasSuffix(trimmed, "…") {
+		if strings.HasPrefix(trimmed, "~") || strings.HasPrefix(trimmed, "/") {
+			return false
+		}
+	}
+
 	return true
 }
 

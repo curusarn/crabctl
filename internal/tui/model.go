@@ -35,8 +35,13 @@ type commandDef struct {
 	Description string // "create a new session"
 }
 
+// OrchestratorName is the reserved session name for the singleton orchestrator.
+// The orchestrator is always anchored at ~/git/crabctl.
+const OrchestratorName = "orchestrator"
+
 var commandDefs = []commandDef{
-	{"/new", "/new <name> [dir]", "create a new session"},
+	{"/new", "/new [name] [dir]", "create a new session (no args = directory picker)"},
+	{"/orchestrator", "/orchestrator", "spawn the singleton crab-orchestrator session"},
 	{"/refresh", "/refresh", "force re-fetch all sessions and PR info"},
 	{"/resume", "/resume", "browse and resume past Claude sessions"},
 	{"/quit", "/quit", "quit crabctl"},
@@ -157,12 +162,16 @@ type Model struct {
 	lastInteracted map[string]time.Time // session key → last attach/send time
 	// Resume mode: browse past Claude sessions to resume
 	pendingFocus   string // full session name to focus+preview after resume
+	dirPicker      *dirPickerState // non-nil when dir-picker overlay is open
 	resumeMode     bool
 	resumeSessions []session.ClaudeSession
 	resumeFiltered []session.ClaudeSession
 	resumeCursor   int
 	refreshPending  bool      // true while a user-initiated refresh is in-flight
 	lastInteraction time.Time // last key/mouse event for remote backoff
+	// Rotating-hint footer state
+	hintIndex        int
+	lastHintRotation time.Time
 	width, height   int
 	AttachTarget    string // set when user confirms attach
 	AttachHost      string // host of session to attach
@@ -440,6 +449,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.parents = parents
 			}
 		}
+		// Treat a successful spawn as an interaction so the new session
+		// bubbles to the top of the sort (BuildTree orders by lastInteracted).
+		if msg.Err == nil && msg.Name != "" {
+			fullName := tmux.SessionPrefix + msg.Name
+			m.recordInteraction(fullName, "")
+		}
 		return m, m.refreshLocalSessions
 
 	case []session.Session:
@@ -563,6 +578,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.syncAutoForwardFromDB()
+		m.rotateHintIfDue()
 		cmds := []tea.Cmd{tickCmd(), m.refreshLocalSessions}
 		if m.preview != nil && !m.resumeMode {
 			cmds = append(cmds, m.capturePreviewCmd(m.preview.FullName, m.preview.Host))
@@ -616,6 +632,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Escape
 	if key.Matches(msg, keys.Escape) {
+		if m.dirPicker != nil {
+			return m.handleDirPickerKey(msg)
+		}
 		if m.confirmKill != nil {
 			m.confirmKill = nil
 			return m, nil
@@ -746,6 +765,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Dir-picker overlay takes precedence over all other modes
+	if m.dirPicker != nil {
+		return m.handleDirPickerKey(msg)
+	}
+
+	// Ctrl+N opens the dir-picker (or, in feature 2, the orchestrator quick-spawn)
+	if key.Matches(msg, keys.NewSession) && !m.resumeMode {
+		return m.openSpawnFlow()
+	}
+
 	// Resume mode key handling
 	if m.resumeMode {
 		return m.handleResumeKey(msg)
@@ -781,22 +810,28 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Navigation and selection: only when input is empty
+	// Arrow keys navigate the filtered session list regardless of input
+	// content (a /command-suggestion menu is handled above and returns early).
+	// Without this, typing a filter would trap the user — they could narrow
+	// the list but not pick from it without first clearing the filter.
+	if key.Matches(msg, keys.Up) {
+		if m.cursor > 0 {
+			m.cursor--
+			m.ensureCursorVisible()
+		}
+		return m, nil
+	}
+	if key.Matches(msg, keys.Down) {
+		if m.cursor < len(m.filtered)-1 {
+			m.cursor++
+			m.ensureCursorVisible()
+		}
+		return m, nil
+	}
+
+	// Multi-select with Space stays gated to empty input — otherwise Space
+	// would be a filter character.
 	if m.input.Value() == "" {
-		if key.Matches(msg, keys.Up) {
-			if m.cursor > 0 {
-				m.cursor--
-				m.ensureCursorVisible()
-			}
-			return m, nil
-		}
-		if key.Matches(msg, keys.Down) {
-			if m.cursor < len(m.filtered)-1 {
-				m.cursor++
-				m.ensureCursorVisible()
-			}
-			return m, nil
-		}
 		if key.Matches(msg, keys.Space) {
 			if sel := m.selectedSession(); sel != nil {
 				if m.selected[sel.FullName] {
@@ -852,6 +887,18 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if text == "/quit" {
 			m.quitting = true
 			return m, tea.Quit
+		}
+
+		// /new with no args routes through openSpawnFlow (picker or orchestrator).
+		if text == "/new" {
+			m.input.SetValue("")
+			return m.openSpawnFlow()
+		}
+
+		// /orchestrator spawns the reserved singleton crab-orchestrator.
+		if text == "/orchestrator" {
+			m.input.SetValue("")
+			return m, m.spawnOrchestratorCmd()
 		}
 
 		// /new command: create a new session
@@ -961,8 +1008,10 @@ func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-		// Send text to session
-		m.recordInteraction(m.preview.FullName, m.preview.Host)
+		// Send text to session — intentionally NOT recorded as an
+		// interaction. Send is typically the orchestrator delegating to a
+		// worker, and we don't want the worker to bubble above the
+		// orchestrator in the sort. Attach (above) still counts.
 		exec := m.findExecutor(m.preview.Host)
 		_ = exec.SendKeys(m.preview.FullName, text)
 		m.input.SetValue("")
@@ -1399,6 +1448,79 @@ func (m Model) selectedSession() *session.Session {
 	return &s
 }
 
+// hintRotationInterval controls how often the rotating footer hint advances.
+const hintRotationInterval = 6 * time.Second
+
+// rotateHintIfDue advances hintIndex if enough time has elapsed since the
+// last rotation. Called from the regular tick handler — drift is bounded by
+// pollInterval (1.5s).
+func (m *Model) rotateHintIfDue() {
+	if m.lastHintRotation.IsZero() {
+		m.lastHintRotation = time.Now()
+		return
+	}
+	if time.Since(m.lastHintRotation) >= hintRotationInterval {
+		if n := len(rotatingHints); n > 0 {
+			m.hintIndex = (m.hintIndex + 1) % n
+		}
+		m.lastHintRotation = time.Now()
+	}
+}
+
+// openSpawnFlow routes Ctrl+N (or `/new`-no-args) to the right action:
+//   - if no sessions exist yet → spawn the orchestrator directly
+//   - otherwise → open the directory picker
+//
+// One shortcut, two behaviors, so users only learn ctrl+n.
+func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
+	if len(m.sessions) == 0 {
+		return m, m.spawnOrchestratorCmd()
+	}
+	startDir := ""
+	if sel := m.selectedSession(); sel != nil {
+		startDir = sel.WorkDir
+	}
+	m.preview = nil
+	m.input.SetValue("")
+	m.dirPicker = openDirPicker(startDir)
+	return m, nil
+}
+
+// spawnOrchestratorCmd builds the tea.Cmd that creates the reserved
+// crab-orchestrator session anchored at ~/git/crabctl. Singleton — errors
+// out if it already exists.
+func (m Model) spawnOrchestratorCmd() tea.Cmd {
+	store := m.store
+	parent := tmux.DetectParent("")
+	return func() tea.Msg {
+		fullName := tmux.SessionPrefix + OrchestratorName
+		if tmux.HasSession(fullName) {
+			return sessionCreatedMsg{Name: OrchestratorName, Err: fmt.Errorf("orchestrator already running")}
+		}
+		dir := orchestratorDir()
+		claudeArgs := []string{"--dangerously-skip-permissions"}
+		err := tmux.NewSession(OrchestratorName, dir, claudeArgs, parent)
+		if err == nil && parent != "" && store != nil {
+			store.SaveParent(session.SessionKey("", fullName), parent)
+		}
+		return sessionCreatedMsg{Name: OrchestratorName, Err: err}
+	}
+}
+
+// orchestratorDir resolves ~/git/crabctl, falling back to $HOME, then cwd.
+func orchestratorDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidate := filepath.Join(home, "git", "crabctl")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		return home
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
 func (m Model) parseNewCommand(text string) tea.Cmd {
 	if !strings.HasPrefix(text, "/new ") {
 		return nil
@@ -1590,13 +1712,12 @@ func (m Model) selectedClaudeSession() *session.ClaudeSession {
 // Sessions are kept visible until new data arrives (no flash).
 func (m *Model) performRefresh() tea.Cmd {
 	m.refreshPending = true
+	// Clear the PR cache and DON'T re-warm from DB — re-warming with
+	// Persistent entries would defeat the whole purpose of /refresh, since
+	// LookupCachedPR would then short-circuit resolvePRsCmd and the user
+	// would never pick up newly-opened PRs. A brief flash of empty PR
+	// cells while gh runs is acceptable; correctness wins.
 	session.ClearPRCache()
-	// Re-warm PR cache from DB so persisted PRs survive the refresh
-	if m.store != nil {
-		if prs, err := m.store.LoadAllPRs(); err == nil {
-			session.WarmPRCache(prs)
-		}
-	}
 	// Reload interactions from DB (picks up changes from other crabctl instances)
 	if m.store != nil {
 		if li, err := m.store.LoadAllInteractions(); err == nil {

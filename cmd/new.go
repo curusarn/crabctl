@@ -55,13 +55,16 @@ var newCmd = &cobra.Command{
 			return fmt.Errorf("failed to create session: %w", err)
 		}
 
-		// Save parent relationship to DB
-		if parent != "" {
-			sessionKey := session.SessionKey(host, fullName)
-			if store, err := state.Open(); err == nil {
-				defer store.Close()
+		// Save parent relationship + record spawn as an interaction so the
+		// new session sorts to the top of the TUI list (BuildTree orders by
+		// lastInteracted).
+		sessionKey := session.SessionKey(host, fullName)
+		if store, err := state.Open(); err == nil {
+			defer store.Close()
+			if parent != "" {
 				store.SaveParent(sessionKey, parent)
 			}
+			_ = store.SaveInteraction(sessionKey)
 		}
 
 		fmt.Printf("Created session %q\n", args[0])
