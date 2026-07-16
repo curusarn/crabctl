@@ -115,3 +115,40 @@ func TestOpenSpawnFlowWithSessionsOpensPicker(t *testing.T) {
 		t.Errorf("non-empty state should open the dir-picker")
 	}
 }
+
+// Ctrl+N on a greyed-out (virtual) parent relaunches that session in place
+// instead of opening the picker to nest a child under a session that is gone.
+func TestOpenSpawnFlowVirtualRelaunchesInPlace(t *testing.T) {
+	m := newSmokeModel()
+	m.sessions = []session.Session{
+		{Name: "orch", FullName: "crab-orch", Virtual: true},
+		{Name: "w1", FullName: "crab-w1", WorkDir: t.TempDir()},
+	}
+	m.filtered = m.sessions
+	m.cursor = 0 // select the virtual parent
+
+	ret, cmd := m.openSpawnFlow()
+	rm := ret.(Model)
+	if rm.dirPicker != nil {
+		t.Errorf("virtual selection should NOT open the dir-picker")
+	}
+	if cmd == nil {
+		t.Fatalf("virtual selection should return a relaunch cmd")
+	}
+}
+
+// A live selection must still open the picker (child-spawn behavior preserved).
+func TestOpenSpawnFlowLiveSelectionStillOpensPicker(t *testing.T) {
+	m := newSmokeModel()
+	m.sessions = []session.Session{
+		{Name: "orch", FullName: "crab-orch", Virtual: true},
+		{Name: "w1", FullName: "crab-w1", WorkDir: t.TempDir()},
+	}
+	m.filtered = m.sessions
+	m.cursor = 1 // select the live session
+
+	ret, _ := m.openSpawnFlow()
+	if ret.(Model).dirPicker == nil {
+		t.Errorf("live selection should still open the dir-picker")
+	}
+}

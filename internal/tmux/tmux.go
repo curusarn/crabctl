@@ -152,6 +152,11 @@ func NewSession(name, workDir string, claudeArgs []string, parent string) error 
 	}
 
 	fullName := SessionPrefix + name
+	// Respawning a session from inside itself (e.g. `crabctl new orchestrator`
+	// run in crab-orchestrator) would otherwise record it as its own parent.
+	if parent == fullName {
+		parent = ""
+	}
 	args := []string{"new-session", "-d", "-s", fullName}
 	// Set CRABCTL_NAME so the child session knows its own identity
 	args = append(args, "-e", "CRABCTL_NAME="+fullName)

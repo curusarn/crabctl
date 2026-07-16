@@ -210,7 +210,12 @@ func (s *Store) ListResumable(limit int) ([]PastSession, error) {
 }
 
 // SaveParent persists the parent session key for a session.
+// A session can never be its own parent — such an edge is a cycle that would
+// make the TUI's tree walk recurse forever, so drop it at the write boundary.
 func (s *Store) SaveParent(name, parent string) error {
+	if name == parent {
+		return nil
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO sessions (name, parent, updated_at)
 		VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -238,6 +243,17 @@ func (s *Store) LoadAllParents() (map[string]string, error) {
 		result[name] = parent
 	}
 	return result, rows.Err()
+}
+
+// WorkDirOf returns the last known working directory for a session, or "" if
+// unknown. Survives a kill, so a dead session can be relaunched where it lived.
+func (s *Store) WorkDirOf(name string) string {
+	var workDir string
+	err := s.db.QueryRow("SELECT work_dir FROM sessions WHERE name = ?", name).Scan(&workDir)
+	if err != nil {
+		return ""
+	}
+	return workDir
 }
 
 // SavePR persists the PR URL and state for a session.

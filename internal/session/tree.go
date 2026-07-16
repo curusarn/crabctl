@@ -51,6 +51,25 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 		}
 	}
 
+	// Break parent cycles before building the graph. A session recorded as its
+	// own parent (or any a→b→a loop) would otherwise make the recursive helpers
+	// below loop forever and blow the stack. Cycle members are promoted to roots
+	// so they stay visible rather than silently vanishing.
+	parentOf := make(map[string]string, len(sessions))
+	for i := range sessions {
+		parentOf[SessionKey(sessions[i].Host, sessions[i].FullName)] = sessions[i].Parent
+	}
+	for i := range sessions {
+		seen := map[string]bool{SessionKey(sessions[i].Host, sessions[i].FullName): true}
+		for p := sessions[i].Parent; p != ""; p = parentOf[p] {
+			if seen[p] {
+				sessions[i].Parent = ""
+				break
+			}
+			seen[p] = true
+		}
+	}
+
 	// Build parent→children map
 	children := make(map[string][]int) // parent key → indices in sessions
 	orphans := make([]int, 0)

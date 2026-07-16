@@ -146,7 +146,9 @@ func listSessionsWithPrefix(prefix string) ([]SessionInfo, error) {
 
 	sessions := parseSessionList(out, prefix)
 	for i := range sessions {
-		if p := GetSessionEnv(sessions[i].FullName, "CRABCTL_PARENT"); p != "" {
+		// Ignore a self-referential CRABCTL_PARENT — it's a cycle, and older
+		// sessions may still carry one baked into their tmux env.
+		if p := GetSessionEnv(sessions[i].FullName, "CRABCTL_PARENT"); p != "" && p != sessions[i].FullName {
 			sessions[i].Parent = p
 		}
 	}

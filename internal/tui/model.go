@@ -1469,12 +1469,19 @@ func (m *Model) rotateHintIfDue() {
 
 // openSpawnFlow routes Ctrl+N (or `/new`-no-args) to the right action:
 //   - if no sessions exist yet → spawn the orchestrator directly
+//   - if a virtual (dead, greyed-out) session is selected → relaunch it in place
 //   - otherwise → open the directory picker
 //
-// One shortcut, two behaviors, so users only learn ctrl+n.
+// One shortcut, three behaviors, so users only learn ctrl+n.
 func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
 	if len(m.sessions) == 0 {
 		return m, m.spawnOrchestratorCmd()
+	}
+	// A greyed-out row is a parent whose tmux session is gone. Ctrl+N revives it
+	// under its own name so its children stay attached, rather than nesting a
+	// new child under a session that isn't there.
+	if sel := m.selectedSession(); sel != nil && sel.Virtual {
+		return m, m.relaunchSessionCmd(sel.FullName)
 	}
 	startDir := ""
 	parent := ""
@@ -1487,6 +1494,40 @@ func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
 	m.dirPicker = openDirPicker(startDir)
 	m.dirPicker.Parent = parent
 	return m, nil
+}
+
+// relaunchSessionCmd recreates a dead session under its existing name, in the
+// working directory it last ran in (remembered in the DB across the kill), and
+// keeps its recorded parent so it lands back in the same spot in the tree.
+func (m Model) relaunchSessionCmd(fullName string) tea.Cmd {
+	store := m.store
+	parent := m.parents[fullName]
+	return func() tea.Msg {
+		name := strings.TrimPrefix(fullName, tmux.SessionPrefix)
+		if tmux.HasSession(fullName) {
+			return sessionCreatedMsg{Name: name, Err: fmt.Errorf("session %q already running", name)}
+		}
+
+		dir := ""
+		if store != nil {
+			dir = store.WorkDirOf(fullName)
+		}
+		// The orchestrator has a canonical home; anything else falls back to $HOME.
+		if dir == "" {
+			if name == OrchestratorName {
+				dir = orchestratorDir()
+			} else {
+				dir, _ = os.UserHomeDir()
+			}
+		}
+
+		claudeArgs := []string{"--dangerously-skip-permissions"}
+		err := tmux.NewSession(name, dir, claudeArgs, parent)
+		if err == nil && parent != "" && store != nil {
+			store.SaveParent(session.SessionKey("", fullName), parent)
+		}
+		return sessionCreatedMsg{Name: name, Err: err}
+	}
 }
 
 // spawnOrchestratorCmd builds the tea.Cmd that creates the reserved

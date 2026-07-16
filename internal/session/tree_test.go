@@ -469,3 +469,46 @@ func repeat(s string, n int) string {
 	}
 	return out
 }
+
+// A session that is its own parent must not hang or blow the stack, and must
+// still be visible as a root. Regression: a self-parent edge (from
+// `crabctl new crab-orchestrator` run inside crab-orchestrator) sent
+// groupInteractionTime into infinite recursion → fatal stack overflow.
+func TestBuildTreeSelfParentDoesNotRecurse(t *testing.T) {
+	// Mirrors the real crash: the self-parented session also has real children,
+	// so the sibling sort calls groupInteractionTime on the cycle member.
+	sessions := []Session{
+		{Name: "orch", FullName: "crab-orch", Status: Running, Duration: time.Minute},
+		{Name: "w1", FullName: "crab-w1", Status: Running, Duration: time.Minute},
+		{Name: "w2", FullName: "crab-w2", Status: Running, Duration: time.Minute},
+	}
+	parents := map[string]string{
+		"crab-orch": "crab-orch",
+		"crab-w1":   "crab-orch",
+		"crab-w2":   "crab-orch",
+	}
+	result := BuildTree(sessions, parents, nil, nil)
+	visible := filterVisible(result)
+	if len(visible) != 3 {
+		t.Fatalf("expected 3 visible sessions, got %d", len(visible))
+	}
+	if visible[0].FullName != "crab-orch" {
+		t.Errorf("expected self-parented session to survive as root, got %q", visible[0].FullName)
+	}
+	if visible[0].TreeDepth != 0 {
+		t.Errorf("expected self-parented session promoted to root depth 0, got %d", visible[0].TreeDepth)
+	}
+}
+
+// A longer parent cycle (a→b→a) must also terminate.
+func TestBuildTreeParentCycleDoesNotRecurse(t *testing.T) {
+	sessions := []Session{
+		{Name: "a", FullName: "crab-a", Status: Running, Duration: time.Minute},
+		{Name: "b", FullName: "crab-b", Status: Running, Duration: time.Minute},
+	}
+	parents := map[string]string{"crab-a": "crab-b", "crab-b": "crab-a"}
+	result := BuildTree(sessions, parents, nil, nil)
+	if len(filterVisible(result)) == 0 {
+		t.Fatal("expected cycle members to remain visible, got none")
+	}
+}
