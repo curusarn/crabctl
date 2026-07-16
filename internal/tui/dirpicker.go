@@ -30,6 +30,7 @@ type dirPickerState struct {
 	Filter  string   // fuzzy-filter buffer
 	Name    string   // session name buffer (stage 2)
 	Err     string   // last error to show (e.g. name collision)
+	Parent  string   // parent session FullName to nest the new session under (empty = auto-detect)
 }
 
 // readSubdirs returns the basenames of immediate subdirectories of cwd,
@@ -280,7 +281,12 @@ func (m Model) handlePickerNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		dir := p.Cwd
-		parent := tmux.DetectParent("")
+		// Nest the new session under the session that was selected when the
+		// picker was opened; fall back to auto-detection when none was set.
+		parent := p.Parent
+		if parent == "" {
+			parent = tmux.DetectParent("")
+		}
 		store := m.store
 		m.dirPicker = nil
 		return m, func() tea.Msg {

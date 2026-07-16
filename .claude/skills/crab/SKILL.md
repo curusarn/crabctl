@@ -97,6 +97,7 @@ tmux send-keys -t SESSION_NAME Enter
 - The Enter MUST be sent as a separate Bash tool call — NOT chained with `&&` or `;` or newlines in the same command. This is because tmux needs time to process the pasted text before receiving Enter.
 - After sending, wait 3-5 seconds then run `crabctl capture SESSION_NAME` to verify the message was submitted (look for spinner or response starting)
 - If the session still shows the prompt with your text but no spinner, send Enter again
+- If keystrokes seem to vanish entirely (text never even appears at the prompt), the pane is likely stuck in tmux copy mode — see section 7b before re-sending
 
 **Remote sessions (send via SSH):**
 
@@ -115,6 +116,44 @@ When composing instructions for a crab:
 - Tell it to `git pull` if another session has pushed changes
 - Be specific about what to do and what NOT to do
 - If the crab is idle at the prompt, your message becomes its next task
+
+### 7b. Unsticking a frozen session (tmux copy-mode trap)
+
+If a session stops accepting input — keystrokes seem to vanish, messages never submit, and "pressing Esc many times" doesn't help — the pane is almost always stuck in **tmux copy mode** (an agent scrolled the pane or left a key-prefix wait). Spamming keys into the pane fights an input backlog; it does not unwind the mode. **Send the fix from outside the pane instead.**
+
+**Step 1 — diagnose.** Check whether the pane is in a mode (`1` = stuck in copy mode):
+```bash
+tmux display-message -p -t SESSION_NAME '#{pane_in_mode}'
+```
+List every pane and which are stuck at once:
+```bash
+tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} mode=#{pane_in_mode} cmd=#{pane_current_command}'
+```
+
+**Step 2 — exit copy mode programmatically.** This is the deterministic one-shot fix; it cancels copy mode regardless of how many queued searches/prefixes are pending:
+```bash
+tmux send-keys -t SESSION_NAME -X cancel
+```
+Then re-capture (`crabctl capture SESSION_NAME`) to confirm the prompt is back, and re-send whatever didn't go through (remember: text via `-l`, then Enter as a separate call).
+
+**Step 3 — if `-X cancel` doesn't free it**, the pane is NOT in tmux copy mode — a program *inside* the pane is holding input (a pager, vim, a REPL, a permission prompt). Check what's running and send its own quit key:
+```bash
+tmux display-message -p -t SESSION_NAME '#{pane_current_command}'
+```
+- pager (`less`/`man`) → send `q`
+- vim → send `Escape` then `:q!` Enter
+- generic hang → send `C-c`
+
+```bash
+tmux send-keys -t SESSION_NAME q          # pager
+tmux send-keys -t SESSION_NAME C-c        # interrupt
+```
+
+**Remote sessions:** wrap any of the above in `ssh $WORKBENCH_HOST "..."`.
+
+**Prevention (when checking a session before typing):** if `#{pane_in_mode}` is `1`, send `-X cancel` *first*, before dumping keystrokes — otherwise the input piles up and produces the "100 Escapes" situation. Two optional tmux config tweaks the user can add to `~/.tmux.conf` to make this rarer:
+- `set -sg escape-time 10` — the default 500ms makes tmux misread the rapid Esc sequences agents generate; lowering it makes Esc behave predictably.
+- `bind C-x send-keys -X cancel` — a panic binding so `prefix C-x` cancels copy mode on the current pane without leaving home row.
 
 ### 8. Creating new crab sessions
 

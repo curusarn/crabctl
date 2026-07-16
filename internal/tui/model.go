@@ -1477,12 +1477,15 @@ func (m Model) openSpawnFlow() (tea.Model, tea.Cmd) {
 		return m, m.spawnOrchestratorCmd()
 	}
 	startDir := ""
+	parent := ""
 	if sel := m.selectedSession(); sel != nil {
 		startDir = sel.WorkDir
+		parent = sel.FullName
 	}
 	m.preview = nil
 	m.input.SetValue("")
 	m.dirPicker = openDirPicker(startDir)
+	m.dirPicker.Parent = parent
 	return m, nil
 }
 
