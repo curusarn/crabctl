@@ -1530,12 +1530,22 @@ func (m Model) relaunchSessionCmd(fullName string) tea.Cmd {
 	}
 }
 
+// resolveDetectedParent reroutes an auto-detected parent that is no longer
+// alive (CRABCTL_NAME env outlives the session it came from) to its nearest
+// live ancestor, or top level when the whole chain is dead.
+func (m Model) resolveDetectedParent(parent string) string {
+	if parent == "" || tmux.HasSession(parent) {
+		return parent
+	}
+	return session.NearestLiveAncestor(parent, m.parents, tmux.HasSession)
+}
+
 // spawnOrchestratorCmd builds the tea.Cmd that creates the reserved
 // crab-orchestrator session anchored at ~/git/crabctl. Singleton — errors
 // out if it already exists.
 func (m Model) spawnOrchestratorCmd() tea.Cmd {
 	store := m.store
-	parent := tmux.DetectParent("")
+	parent := m.resolveDetectedParent(tmux.DetectParent(""))
 	return func() tea.Msg {
 		fullName := tmux.SessionPrefix + OrchestratorName
 		if tmux.HasSession(fullName) {
@@ -1583,7 +1593,7 @@ func (m Model) parseNewCommand(text string) tea.Cmd {
 		dir = parts[2]
 	}
 
-	parent := tmux.DetectParent("")
+	parent := m.resolveDetectedParent(tmux.DetectParent(""))
 	store := m.store
 
 	return func() tea.Msg {

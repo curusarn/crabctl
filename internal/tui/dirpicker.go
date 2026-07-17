@@ -285,7 +285,7 @@ func (m Model) handlePickerNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// picker was opened; fall back to auto-detection when none was set.
 		parent := p.Parent
 		if parent == "" {
-			parent = tmux.DetectParent("")
+			parent = m.resolveDetectedParent(tmux.DetectParent(""))
 		}
 		store := m.store
 		m.dirPicker = nil

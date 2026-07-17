@@ -48,6 +48,23 @@ var newCmd = &cobra.Command{
 		parentFlag, _ := cmd.Flags().GetString("parent")
 		parent := tmux.DetectParent(parentFlag)
 
+		store, storeErr := state.Open()
+		if storeErr == nil {
+			defer store.Close()
+		}
+
+		// Auto-detected parents can be stale — CRABCTL_NAME env outlives the
+		// session it came from. Reroute a dead parent to its nearest live
+		// ancestor (top level if the whole chain is dead). Explicit -p is
+		// trusted as-is.
+		if parentFlag == "" && parent != "" && !tmux.HasSession(parent) {
+			chain := map[string]string{}
+			if storeErr == nil {
+				chain, _ = store.LoadAllParents()
+			}
+			parent = session.NearestLiveAncestor(parent, chain, tmux.HasSession)
+		}
+
 		var claudeArgs []string
 		claudeArgs = append(claudeArgs, "--dangerously-skip-permissions")
 
@@ -59,8 +76,7 @@ var newCmd = &cobra.Command{
 		// new session sorts to the top of the TUI list (BuildTree orders by
 		// lastInteracted).
 		sessionKey := session.SessionKey(host, fullName)
-		if store, err := state.Open(); err == nil {
-			defer store.Close()
+		if storeErr == nil {
 			if parent != "" {
 				store.SaveParent(sessionKey, parent)
 			}
