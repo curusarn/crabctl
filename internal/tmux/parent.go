@@ -3,43 +3,125 @@ package tmux
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
 // DetectParent determines the parent session key for a new session.
-// Priority: 1) explicit flag, 2) tmux session name (if crab-*), 3) CRABCTL_NAME env var.
+// Priority:
+//  1. explicit flag
+//  2. $TMUX_PANE-targeted tmux query (exact; only directly-spawned pane
+//     shells carry TMUX_PANE)
+//  3. process ancestry: nearest ancestor that is a tmux pane root
+//  4. CRABCTL_NAME env var, unless running under a Claude Code bg-pty-host
+//
+// Why the paranoia: Claude Code routes some Bash commands through a shared
+// per-user daemon ("bg-pty-host" pool). Those shells inherit the env of
+// whichever session first spawned the pty-host, so CRABCTL_NAME (and TMUX
+// vars) in here may belong to a DIFFERENT, possibly dead, crab. That is how
+// children got recorded as siblings under the wrong parent.
 func DetectParent(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
 
-	// Check if we're inside a crab tmux session. Target our own pane
-	// explicitly ($TMUX_PANE): an untargeted display-message from a
-	// tty-less client (e.g. Claude Code's Bash tool, stdio all pipes)
-	// makes the server guess the client's pane, and when the guess fails
-	// it silently falls back to the most recently ACTIVE session, which
-	// is how children got recorded as siblings under whatever crab
-	// happened to be busiest. Never query without a target.
+	// Exact: ask tmux about our own pane. Never query untargeted: a
+	// tty-less client makes the server guess the pane, and a failed guess
+	// silently returns the most recently active session instead.
 	if os.Getenv("TMUX") != "" {
 		if pane := os.Getenv("TMUX_PANE"); pane != "" {
-			tmuxBin, err := FindTmux()
-			if err == nil {
-				cmd := exec.Command(tmuxBin, "display-message", "-p", "-t", pane, "#{session_name}")
-				out, err := cmd.Output()
-				if err == nil {
-					name := strings.TrimSpace(string(out))
-					if strings.HasPrefix(name, SessionPrefix) {
-						return name
-					}
-				}
+			if name := sessionForPane(pane); strings.HasPrefix(name, SessionPrefix) {
+				return name
 			}
 		}
 	}
 
-	// Fallback to CRABCTL_NAME env var (for non-tmuxed orchestrators)
-	if name := os.Getenv("CRABCTL_NAME"); name != "" {
+	// No usable TMUX_PANE: walk our ancestors. Hitting a tmux pane root
+	// identifies the session we (or the daemon running us) live in.
+	ancestors, sawPtyHost := ancestry()
+	if name := sessionForAncestors(ancestors); strings.HasPrefix(name, SessionPrefix) {
 		return name
 	}
 
+	// CRABCTL_NAME is trustworthy only outside the pty-host pool; in a
+	// pty-host it may be another session's identity. Better no parent
+	// than a wrong one.
+	if !sawPtyHost {
+		if name := os.Getenv("CRABCTL_NAME"); name != "" {
+			return name
+		}
+	}
+
+	return ""
+}
+
+// sessionForPane resolves a pane id to its session name via tmux.
+func sessionForPane(pane string) string {
+	tmuxBin, err := FindTmux()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command(tmuxBin, "display-message", "-p", "-t", pane, "#{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ancestry returns our ancestor pids (nearest first) and whether any
+// ancestor is a Claude Code daemon / bg-pty-host process.
+func ancestry() ([]int, bool) {
+	var pids []int
+	sawPtyHost := false
+	pid := os.Getppid()
+	for i := 0; i < 20 && pid > 1; i++ {
+		pids = append(pids, pid)
+		out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "ppid=,command=").Output()
+		if err != nil {
+			break
+		}
+		fields := strings.Fields(string(out))
+		if len(fields) == 0 {
+			break
+		}
+		ppid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			break
+		}
+		cmd := strings.Join(fields[1:], " ")
+		if strings.Contains(cmd, "bg-pty-host") || strings.Contains(cmd, "daemon run") {
+			sawPtyHost = true
+		}
+		pid = ppid
+	}
+	return pids, sawPtyHost
+}
+
+// sessionForAncestors maps ancestor pids against tmux pane root pids and
+// returns the session of the nearest match.
+func sessionForAncestors(pids []int) string {
+	tmuxBin, err := FindTmux()
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command(tmuxBin, "list-panes", "-a", "-F", "#{pane_pid} #{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	paneSessions := make(map[int]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if p, err := strconv.Atoi(parts[0]); err == nil {
+			paneSessions[p] = parts[1]
+		}
+	}
+	for _, pid := range pids {
+		if s, ok := paneSessions[pid]; ok {
+			return s
+		}
+	}
 	return ""
 }
