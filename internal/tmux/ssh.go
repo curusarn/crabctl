@@ -121,8 +121,9 @@ func (s *SSHExecutor) NewSession(name, workDir string, claudeArgs []string, pare
 		return err
 	}
 
-	// Send claude command via send-keys to avoid quoting issues through SSH
-	claudeCmd := "unset CLAUDECODE; claude"
+	// Send claude command via send-keys to avoid quoting issues through SSH.
+	// Per-session CDP_PROFILE: same isolation as the local path (see tmux.go).
+	claudeCmd := cdpProfileExport(fullName) + "unset CLAUDECODE; claude"
 	for _, a := range claudeArgs {
 		claudeCmd += " " + a
 	}

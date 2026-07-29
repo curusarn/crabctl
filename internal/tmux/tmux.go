@@ -164,8 +164,12 @@ func NewSession(name, workDir string, claudeArgs []string, parent string) error 
 		args = append(args, "-c", workDir)
 	}
 
-	// Build the claude command, unsetting CLAUDECODE to allow nesting
-	claudeCmd := "unset CLAUDECODE; claude"
+	// Build the claude command, unsetting CLAUDECODE to allow nesting.
+	// Each crab gets its own chrome-devtools profile so parallel crabs don't
+	// collide on one browser profile ("browser already running"). ~/.claude.json
+	// resolves ${CDP_PROFILE:-$HOME/.cache/cdp-profile} in the MCP args; agents
+	// can re-export the shared warm profile as a captcha fallback.
+	claudeCmd := cdpProfileExport(fullName) + "unset CLAUDECODE; claude"
 	for _, a := range claudeArgs {
 		claudeCmd += " " + a
 	}
@@ -193,6 +197,13 @@ func NewSession(name, workDir string, claudeArgs []string, parent string) error 
 	}
 
 	return nil
+}
+
+// cdpProfileExport returns the shell fragment that points CDP_PROFILE at a
+// per-session chrome-devtools profile dir. $HOME is left for the target shell
+// to expand (matters for SSH hosts with a different home).
+func cdpProfileExport(fullName string) string {
+	return `export CDP_PROFILE="$HOME/.cache/cdp-profile-` + fullName + `"; `
 }
 
 // GetSessionEnv reads a tmux environment variable from a session.
