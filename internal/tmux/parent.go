@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/simon/crabctl/internal/state"
 )
 
 // DetectParent determines the parent session key for a new session.
@@ -12,8 +14,11 @@ import (
 //  1. explicit flag
 //  2. $TMUX_PANE-targeted tmux query (exact; only directly-spawned pane
 //     shells carry TMUX_PANE)
-//  3. process ancestry: nearest ancestor that is a tmux pane root
-//  4. CRABCTL_NAME env var, unless running under a Claude Code bg-pty-host
+//  3. CLAUDE_CODE_SESSION_ID mapped through the state DB (injected fresh
+//     per command by Claude Code, so it names the true caller even in
+//     daemon-routed shells)
+//  4. process ancestry: nearest ancestor that is a tmux pane root
+//  5. CRABCTL_NAME env var, unless running under a Claude Code bg-pty-host
 //
 // Why the paranoia: Claude Code routes some Bash commands through a shared
 // per-user daemon ("bg-pty-host" pool). Those shells inherit the env of
@@ -36,8 +41,22 @@ func DetectParent(explicit string) string {
 		}
 	}
 
-	// No usable TMUX_PANE: walk our ancestors. Hitting a tmux pane root
-	// identifies the session we (or the daemon running us) live in.
+	// No usable TMUX_PANE (daemon-routed shells strip TMUX vars). The
+	// harness still injects the CALLER's Claude session id per command,
+	// so it survives pty-host reuse; map it via the state DB, which the
+	// TUI keeps in sync with each crab's Claude session file.
+	if sid := os.Getenv("CLAUDE_CODE_SESSION_ID"); sid != "" {
+		if store, err := state.Open(); err == nil {
+			name := store.SessionByFile(sid)
+			store.Close()
+			if strings.HasPrefix(name, SessionPrefix) {
+				return name
+			}
+		}
+	}
+
+	// Walk our ancestors. Hitting a tmux pane root identifies the session
+	// we (or the daemon running us) live in.
 	ancestors, sawPtyHost := ancestry()
 	if name := sessionForAncestors(ancestors); strings.HasPrefix(name, SessionPrefix) {
 		return name

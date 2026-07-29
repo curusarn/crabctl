@@ -226,6 +226,19 @@ func (s *Store) SaveParent(name, parent string) error {
 	return err
 }
 
+// SessionByFile returns the live session name whose Claude session file
+// matches the given uuid, or "" if none.
+func (s *Store) SessionByFile(uuid string) string {
+	var name string
+	err := s.db.QueryRow(
+		"SELECT name FROM sessions WHERE session_file = ? AND killed = 0", uuid,
+	).Scan(&name)
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
 // LoadAllParents returns a map of session name -> parent key for all sessions with a parent.
 func (s *Store) LoadAllParents() (map[string]string, error) {
 	rows, err := s.db.Query("SELECT name, parent FROM sessions WHERE parent != ''")
