@@ -500,6 +500,117 @@ func TestBuildTreeSelfParentDoesNotRecurse(t *testing.T) {
 	}
 }
 
+// Zombie intermediate parent: A (live) ← B (dead) ← C (live).
+// B must appear as a virtual root with C nested under it; A stays a separate
+// root. No rows lost, no crash.
+func TestBuildTreeZombieIntermediateParent(t *testing.T) {
+	sessions := []Session{
+		{Name: "a", FullName: "crab-a", Status: Waiting, Duration: 10 * time.Minute},
+		{Name: "c", FullName: "crab-c", Status: Running, Duration: 2 * time.Minute},
+	}
+	parents := map[string]string{
+		"crab-b": "crab-a", // B is dead but its edge to A is still recorded
+		"crab-c": "crab-b",
+	}
+	result := BuildTree(sessions, parents, nil, nil)
+	visible := filterVisible(result)
+	if len(visible) != 3 {
+		t.Fatalf("expected 3 visible (a, virtual b, c), got %d", len(visible))
+	}
+	if visible[0].FullName != "crab-a" || visible[0].TreeDepth != 0 {
+		t.Errorf("expected live crab-a as root, got %q depth %d", visible[0].FullName, visible[0].TreeDepth)
+	}
+	if !visible[1].Virtual || visible[1].FullName != "crab-b" {
+		t.Errorf("expected virtual crab-b root, got %+v", visible[1])
+	}
+	if visible[2].FullName != "crab-c" || visible[2].TreeDepth != 1 {
+		t.Errorf("expected crab-c nested under virtual b at depth 1, got %q depth %d", visible[2].FullName, visible[2].TreeDepth)
+	}
+}
+
+// Rebuilding from a previous build's output must be shape-stable. The TUI
+// re-feeds BuildTree its own output (remote merges, fold toggles); a stale
+// virtual row in the input must not register as an active session — that
+// would re-nest the dead parent under ITS recorded parent and make the list
+// flicker between two shapes on alternating refreshes.
+func TestBuildTreeRebuildFromOutputStable(t *testing.T) {
+	sessions := []Session{
+		{Name: "a", FullName: "crab-a", Status: Waiting, Duration: 10 * time.Minute},
+		{Name: "c", FullName: "crab-c", Status: Running, Duration: 2 * time.Minute},
+	}
+	parents := map[string]string{
+		"crab-b": "crab-a",
+		"crab-c": "crab-b",
+	}
+	first := BuildTree(sessions, parents, nil, nil)
+	second := BuildTree(first, parents, nil, nil)
+
+	v1, v2 := filterVisible(first), filterVisible(second)
+	if len(v1) != len(v2) {
+		t.Fatalf("rebuild changed row count: %d → %d", len(v1), len(v2))
+	}
+	for i := range v1 {
+		if v1[i].FullName != v2[i].FullName || v1[i].TreeDepth != v2[i].TreeDepth || v1[i].Virtual != v2[i].Virtual {
+			t.Errorf("row %d changed on rebuild: %q(d%d,v%t) → %q(d%d,v%t)",
+				i, v1[i].FullName, v1[i].TreeDepth, v1[i].Virtual,
+				v2[i].FullName, v2[i].TreeDepth, v2[i].Virtual)
+		}
+	}
+}
+
+// Whole ancestor chain dead: C (live) ← B (dead) ← A (dead).
+// Only B (the direct parent) materializes as a virtual root; A is not
+// referenced by any live session and must not appear.
+func TestBuildTreeWholeChainDead(t *testing.T) {
+	sessions := []Session{
+		{Name: "c", FullName: "crab-c", Status: Running, Duration: 2 * time.Minute},
+	}
+	parents := map[string]string{
+		"crab-b": "crab-a",
+		"crab-c": "crab-b",
+	}
+	result := BuildTree(sessions, parents, nil, nil)
+	visible := filterVisible(result)
+	if len(visible) != 2 {
+		t.Fatalf("expected 2 visible (virtual b, c), got %d", len(visible))
+	}
+	if !visible[0].Virtual || visible[0].FullName != "crab-b" {
+		t.Errorf("expected virtual crab-b first, got %+v", visible[0])
+	}
+	if visible[1].FullName != "crab-c" || visible[1].TreeDepth != 1 {
+		t.Errorf("expected crab-c at depth 1, got %q depth %d", visible[1].FullName, visible[1].TreeDepth)
+	}
+}
+
+func TestNearestLiveAncestor(t *testing.T) {
+	parents := map[string]string{
+		"crab-dead1": "crab-dead2",
+		"crab-dead2": "crab-live",
+		"crab-x":     "crab-y",
+		"crab-y":     "crab-x", // cycle, all dead
+	}
+	alive := func(name string) bool { return name == "crab-live" || name == "crab-already-live" }
+
+	if got := NearestLiveAncestor("crab-already-live", parents, alive); got != "crab-already-live" {
+		t.Errorf("live candidate should resolve to itself, got %q", got)
+	}
+	if got := NearestLiveAncestor("crab-dead1", parents, alive); got != "crab-live" {
+		t.Errorf("expected nearest live ancestor crab-live, got %q", got)
+	}
+	if got := NearestLiveAncestor("crab-dead2", parents, alive); got != "crab-live" {
+		t.Errorf("expected direct parent crab-live, got %q", got)
+	}
+	if got := NearestLiveAncestor("crab-unknown", parents, alive); got != "" {
+		t.Errorf("dead candidate with no recorded chain should resolve to top level, got %q", got)
+	}
+	if got := NearestLiveAncestor("crab-x", parents, alive); got != "" {
+		t.Errorf("all-dead cycle should terminate and resolve to top level, got %q", got)
+	}
+	if got := NearestLiveAncestor("", parents, alive); got != "" {
+		t.Errorf("empty candidate should stay empty, got %q", got)
+	}
+}
+
 // A longer parent cycle (a→b→a) must also terminate.
 func TestBuildTreeParentCycleDoesNotRecurse(t *testing.T) {
 	sessions := []Session{

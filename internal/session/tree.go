@@ -36,6 +36,19 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 		lastInteracted = make(map[string]time.Time)
 	}
 
+	// Drop virtual rows carried in from a previous build's output — they are
+	// derived placeholders, not real sessions. Left in, a dead parent would
+	// register as active, stop being virtual, pick up its own recorded
+	// parent, and re-nest its whole subtree — flickering the list between
+	// two shapes on alternating refreshes. They're re-derived below.
+	real := make([]Session, 0, len(sessions))
+	for _, s := range sessions {
+		if !s.Virtual {
+			real = append(real, s)
+		}
+	}
+	sessions = real
+
 	// Build lookup of active sessions by key
 	active := make(map[string]*Session)
 	for i := range sessions {
@@ -315,9 +328,9 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 	}
 
 	// Append sessions not included in the visible tree (hidden by fold state).
-	// Skip virtual parents from previous builds — they'll be re-created if needed.
+	// Virtual rows were already filtered from the input above.
 	for i := range sessions {
-		if !included[i] && !sessions[i].Virtual {
+		if !included[i] {
 			s := sessions[i]
 			s.TreeHidden = true
 			result = append(result, s)
@@ -325,6 +338,23 @@ func BuildTree(sessions []Session, parents map[string]string, foldState map[stri
 	}
 
 	return result
+}
+
+// NearestLiveAncestor walks up the recorded parent chain from start until it
+// finds a session that is alive, returning "" when the whole chain is dead or
+// unknown. Used to keep auto-detected parents from pointing at killed
+// sessions (env vars like CRABCTL_NAME outlive the session they came from).
+// Guards against cycles in the recorded chain.
+func NearestLiveAncestor(start string, parentOf map[string]string, alive func(string) bool) string {
+	seen := make(map[string]bool)
+	for cur := start; cur != "" && !seen[cur]; {
+		if alive(cur) {
+			return cur
+		}
+		seen[cur] = true
+		cur = parentOf[cur]
+	}
+	return ""
 }
 
 // parseSessionKey splits "host:fullName" back into parts.
